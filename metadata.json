@@ -1,0 +1,6 @@
+{
+  "name": "AI Discipline Coach",
+  "description": "Huấn luyện viên thể chất cá nhân hóa tối ưu cho điện thoại: lưu hồ sơ sức khỏe, thiết lập mục tiêu và tạo lịch tập Tuần 1 an toàn bằng AI.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
