@@ -4,6 +4,7 @@ import {
   classifyAgeGroup,
   evaluateBmi,
   evaluateCautionStatus,
+  evaluateSafetyProfile,
 } from '../src/shared/types.ts';
 
 test('classifyAgeGroup separates youth, teen, adult, senior, and unknown', () => {
@@ -47,12 +48,16 @@ test('evaluateBmi classifies adults (>=18) accurately and handles missing data s
   assert.equal(missing.isAdultClassification, false);
 });
 
-test('evaluateCautionStatus triggers cautious mode for youth, senior, missing data, extreme BMI, or health limitations', () => {
+test('evaluateCautionStatus triggers cautious mode for minors, senior, missing data, extreme BMI, or health limitations', () => {
   assert.equal(evaluateCautionStatus(28, [], '', 65, 170).cautiousMode, false);
 
   const youth = evaluateCautionStatus(15, [], '', 50, 160);
   assert.equal(youth.cautiousMode, true);
   assert.ok(youth.cautionReasons.some((r) => r.includes('dưới 16')));
+
+  const teen = evaluateCautionStatus(17, [], '', 62, 170);
+  assert.equal(teen.cautiousMode, true);
+  assert.ok(teen.cautionReasons.some((r) => r.includes('vị thành niên')));
 
   const senior = evaluateCautionStatus(64, [], '', 65, 168);
   assert.equal(senior.cautiousMode, true);
@@ -66,4 +71,74 @@ test('evaluateCautionStatus triggers cautious mode for youth, senior, missing da
 
   const extremeBmi = evaluateCautionStatus(30, [], '', 98, 170);
   assert.equal(extremeBmi.cautiousMode, true);
+});
+
+test('evaluateSafetyProfile enforces minor guardian rules, medical clearance triggers, and load limits', () => {
+  const youth = evaluateSafetyProfile({
+    age: 14,
+    weightKg: 48,
+    heightCm: 158,
+    fitnessLevel: 'beginner',
+    daysPerWeek: 3,
+    healthLimitations: [],
+    healthNotes: '',
+  });
+  assert.equal(youth.isMinor, true);
+  assert.equal(youth.requiresGuardianSupervision, true);
+  assert.equal(youth.cautiousMode, true);
+  assert.equal(youth.loadLimits.allowHighIntensity, false);
+  assert.ok(youth.loadLimits.maxSessionMinutes <= 45);
+  assert.ok(youth.loadLimits.maxSetsPerExercise <= 3);
+
+  const teen = evaluateSafetyProfile({
+    age: 16,
+    weightKg: 60,
+    heightCm: 168,
+    fitnessLevel: 'intermediate',
+    daysPerWeek: 4,
+    healthLimitations: [],
+    healthNotes: '',
+  });
+  assert.equal(teen.isMinor, true);
+  assert.equal(teen.requiresGuardianSupervision, true);
+  assert.equal(teen.loadLimits.allowHighIntensity, false);
+  assert.ok(teen.loadLimits.maxSessionMinutes <= 60);
+
+  const cardioRisk = evaluateSafetyProfile({
+    age: 42,
+    weightKg: 72,
+    heightCm: 170,
+    fitnessLevel: 'intermediate',
+    daysPerWeek: 3,
+    healthLimitations: ['Tim mạch / Huyết áp'],
+    healthNotes: '',
+  });
+  assert.equal(cardioRisk.requiresMedicalClearance, true);
+  assert.equal(cardioRisk.cautiousMode, true);
+  assert.ok(cardioRisk.medicalClearanceReasons.length >= 1);
+  assert.ok(cardioRisk.loadLimits.maxSessionMinutes <= 45);
+  assert.ok(cardioRisk.loadLimits.minRestSeconds >= 60);
+
+  const noteKeywordRisk = evaluateSafetyProfile({
+    age: 34,
+    weightKg: 66,
+    heightCm: 170,
+    fitnessLevel: 'beginner',
+    daysPerWeek: 3,
+    healthLimitations: [],
+    healthNotes: 'Thi thoảng bị đau ngực và chóng mặt khi leo cầu thang',
+  });
+  assert.equal(noteKeywordRisk.requiresMedicalClearance, true);
+  assert.ok(noteKeywordRisk.medicalClearanceReasons.some((r) => r.includes('đau ngực')));
+
+  const severeBmiRisk = evaluateSafetyProfile({
+    age: 35,
+    weightKg: 112,
+    heightCm: 170,
+    fitnessLevel: 'beginner',
+    daysPerWeek: 3,
+    healthLimitations: [],
+    healthNotes: '',
+  });
+  assert.equal(severeBmiRisk.requiresMedicalClearance, true);
 });

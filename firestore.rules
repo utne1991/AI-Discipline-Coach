@@ -1,0 +1,467 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidDateKey(dateKey) {
+      return dateKey is string &&
+        dateKey.size() == 10 &&
+        dateKey.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll([
+          'uid',
+          'reminderEnabled',
+          'reminderTime',
+          'timezone',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'uid',
+          'reminderEnabled',
+          'reminderTime',
+          'timezone',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.uid is string &&
+        isValidId(data.uid) &&
+        data.uid == request.auth.uid &&
+        data.uid == userId &&
+        data.reminderEnabled is bool &&
+        data.reminderTime is string &&
+        data.reminderTime.size() == 5 &&
+        data.reminderTime.matches('^([01][0-9]|2[0-3]):[0-5][0-9]$') &&
+        data.timezone is string &&
+        data.timezone.size() >= 1 &&
+        data.timezone.size() <= 64 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isUpdateReminderAction() {
+      return incoming().diff(existing()).affectedKeys().hasOnly([
+        'reminderEnabled',
+        'reminderTime',
+        'timezone',
+        'updatedAt'
+      ]);
+    }
+
+    function isValidFitnessProfile(data, userId) {
+      return data.keys().hasAll([
+          'uid',
+          'fullName',
+          'age',
+          'weightKg',
+          'heightCm',
+          'fitnessLevel',
+          'daysPerWeek',
+          'equipment',
+          'healthLimitations',
+          'healthNotes',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'uid',
+          'fullName',
+          'age',
+          'weightKg',
+          'heightCm',
+          'fitnessLevel',
+          'daysPerWeek',
+          'equipment',
+          'healthLimitations',
+          'healthNotes',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.uid is string &&
+        isValidId(data.uid) &&
+        data.uid == request.auth.uid &&
+        data.uid == userId &&
+        data.fullName is string &&
+        data.fullName.size() >= 1 &&
+        data.fullName.size() <= 80 &&
+        data.age is int &&
+        data.age >= 10 &&
+        data.age <= 100 &&
+        data.weightKg is number &&
+        data.weightKg >= 25 &&
+        data.weightKg <= 250 &&
+        data.heightCm is number &&
+        data.heightCm >= 100 &&
+        data.heightCm <= 230 &&
+        data.fitnessLevel in ['beginner', 'intermediate', 'advanced'] &&
+        data.daysPerWeek is int &&
+        data.daysPerWeek >= 1 &&
+        data.daysPerWeek <= 7 &&
+        data.equipment in ['none', 'home', 'gym'] &&
+        data.healthLimitations is list &&
+        data.healthLimitations.size() <= 12 &&
+        (data.healthLimitations.size() == 0 || data.healthLimitations[0] is string) &&
+        data.healthNotes is string &&
+        data.healthNotes.size() <= 500 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isUpdateFitnessProfileAction() {
+      return incoming().diff(existing()).affectedKeys().hasOnly([
+        'fullName',
+        'age',
+        'weightKg',
+        'heightCm',
+        'fitnessLevel',
+        'daysPerWeek',
+        'equipment',
+        'healthLimitations',
+        'healthNotes',
+        'updatedAt'
+      ]);
+    }
+
+    function isValidFitnessGoal(data, userId) {
+      return data.keys().hasAll([
+          'uid',
+          'sport',
+          'goalType',
+          'durationWeeks',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'uid',
+          'sport',
+          'goalType',
+          'durationWeeks',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.uid is string &&
+        isValidId(data.uid) &&
+        data.uid == request.auth.uid &&
+        data.uid == userId &&
+        data.sport in ['running', 'home_workout', 'gym'] &&
+        data.goalType in ['weight_loss', 'muscle_gain', 'endurance'] &&
+        data.durationWeeks is int &&
+        data.durationWeeks >= 4 &&
+        data.durationWeeks <= 12 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isUpdateFitnessGoalAction() {
+      return incoming().diff(existing()).affectedKeys().hasOnly([
+        'sport',
+        'goalType',
+        'durationWeeks',
+        'updatedAt'
+      ]);
+    }
+
+    function isValidAiConsentRecord(data, userId) {
+      return data.keys().hasAll([
+          'uid',
+          'policyVersion',
+          'aiHealthDataConsent',
+          'guardianConsentConfirmed',
+          'medicalClearanceAcknowledged',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'uid',
+          'policyVersion',
+          'aiHealthDataConsent',
+          'guardianConsentConfirmed',
+          'medicalClearanceAcknowledged',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.uid is string &&
+        isValidId(data.uid) &&
+        data.uid == request.auth.uid &&
+        data.uid == userId &&
+        data.policyVersion is string &&
+        data.policyVersion.size() >= 1 &&
+        data.policyVersion.size() <= 32 &&
+        data.aiHealthDataConsent is bool &&
+        data.guardianConsentConfirmed is bool &&
+        data.medicalClearanceAcknowledged is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isUpdateAiConsentAction() {
+      return incoming().diff(existing()).affectedKeys().hasOnly([
+        'policyVersion',
+        'aiHealthDataConsent',
+        'guardianConsentConfirmed',
+        'medicalClearanceAcknowledged',
+        'updatedAt'
+      ]);
+    }
+
+    function isValidWorkoutPlan(data, userId) {
+      return data.keys().hasAll([
+          'uid',
+          'numericId',
+          'weekNumber',
+          'sport',
+          'goalType',
+          'durationWeeks',
+          'cautiousMode',
+          'cautionReasons',
+          'safetyAlert',
+          'strategySummary',
+          'coachPrinciples',
+          'scheduleJson',
+          'completedDays',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'uid',
+          'numericId',
+          'weekNumber',
+          'sport',
+          'goalType',
+          'durationWeeks',
+          'cautiousMode',
+          'cautionReasons',
+          'safetyAlert',
+          'strategySummary',
+          'coachPrinciples',
+          'scheduleJson',
+          'completedDays',
+          'aiProvider',
+          'isSimulated',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.uid is string &&
+        isValidId(data.uid) &&
+        data.uid == request.auth.uid &&
+        data.uid == userId &&
+        data.numericId is int &&
+        data.numericId > 0 &&
+        data.weekNumber is int &&
+        data.weekNumber >= 1 &&
+        data.weekNumber <= 52 &&
+        data.sport in ['running', 'home_workout', 'gym'] &&
+        data.goalType in ['weight_loss', 'muscle_gain', 'endurance'] &&
+        data.durationWeeks is int &&
+        data.durationWeeks >= 4 &&
+        data.durationWeeks <= 12 &&
+        data.cautiousMode is bool &&
+        data.cautionReasons is list &&
+        data.cautionReasons.size() <= 12 &&
+        (data.cautionReasons.size() == 0 || data.cautionReasons[0] is string) &&
+        data.safetyAlert is string &&
+        data.safetyAlert.size() <= 1500 &&
+        data.strategySummary is string &&
+        data.strategySummary.size() <= 3000 &&
+        data.coachPrinciples is list &&
+        data.coachPrinciples.size() <= 10 &&
+        (data.coachPrinciples.size() == 0 || data.coachPrinciples[0] is string) &&
+        data.scheduleJson is list &&
+        data.scheduleJson.size() == 7 &&
+        data.scheduleJson[0] is map &&
+        data.completedDays is list &&
+        data.completedDays.size() <= 7 &&
+        (data.completedDays.size() == 0 || data.completedDays[0] is int) &&
+        (!('aiProvider' in data) || data.aiProvider in ['gemini', 'mock']) &&
+        (!('isSimulated' in data) || data.isSimulated is bool) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isTogglePlanDayAction() {
+      return incoming().diff(existing()).affectedKeys().hasOnly([
+        'completedDays',
+        'updatedAt'
+      ]);
+    }
+
+    function isValidDailyGoal(data, userId, dateKey) {
+      return data.keys().hasAll([
+          'uid',
+          'dateKey',
+          'title',
+          'completed',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'uid',
+          'dateKey',
+          'title',
+          'completed',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.uid is string &&
+        isValidId(data.uid) &&
+        data.uid == request.auth.uid &&
+        data.uid == userId &&
+        data.dateKey is string &&
+        isValidDateKey(data.dateKey) &&
+        data.dateKey == dateKey &&
+        data.title is string &&
+        data.title.size() >= 1 &&
+        data.title.size() <= 120 &&
+        data.completed is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isUpdateDailyGoalAction() {
+      return incoming().diff(existing()).affectedKeys().hasOnly([
+        'title',
+        'completed',
+        'updatedAt'
+      ]);
+    }
+
+    match /users/{userId} {
+      allow get: if isOwner(userId) && isValidId(userId);
+      allow list: if false;
+      allow create: if isOwner(userId) &&
+        isValidId(userId) &&
+        isValidUserProfile(incoming(), userId) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isOwner(userId) &&
+        isValidId(userId) &&
+        isValidUserProfile(incoming(), userId) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        isUpdateReminderAction();
+      allow delete: if false;
+
+      match /appData/profile {
+        allow get: if isOwner(userId) && isValidId(userId);
+        allow list: if false;
+        allow create: if isOwner(userId) &&
+          isValidId(userId) &&
+          isValidFitnessProfile(incoming(), userId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time;
+        allow update: if isOwner(userId) &&
+          isValidId(userId) &&
+          isValidFitnessProfile(incoming(), userId) &&
+          incoming().uid == existing().uid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          isUpdateFitnessProfileAction();
+        allow delete: if false;
+      }
+
+      match /appData/goal {
+        allow get: if isOwner(userId) && isValidId(userId);
+        allow list: if false;
+        allow create: if isOwner(userId) &&
+          isValidId(userId) &&
+          isValidFitnessGoal(incoming(), userId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time;
+        allow update: if isOwner(userId) &&
+          isValidId(userId) &&
+          isValidFitnessGoal(incoming(), userId) &&
+          incoming().uid == existing().uid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          isUpdateFitnessGoalAction();
+        allow delete: if false;
+      }
+
+      match /appData/consent {
+        allow get: if isOwner(userId) && isValidId(userId);
+        allow list: if false;
+        allow create: if isOwner(userId) &&
+          isValidId(userId) &&
+          isValidAiConsentRecord(incoming(), userId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time;
+        allow update: if isOwner(userId) &&
+          isValidId(userId) &&
+          isValidAiConsentRecord(incoming(), userId) &&
+          incoming().uid == existing().uid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          isUpdateAiConsentAction();
+        allow delete: if false;
+      }
+
+      match /plans/{planId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(planId);
+        allow list: if isOwner(userId) && existing().uid == request.auth.uid;
+        allow create: if isOwner(userId) &&
+          isValidId(userId) &&
+          isValidId(planId) &&
+          isValidWorkoutPlan(incoming(), userId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time;
+        allow update: if isOwner(userId) &&
+          isValidId(userId) &&
+          isValidId(planId) &&
+          isValidWorkoutPlan(incoming(), userId) &&
+          incoming().uid == existing().uid &&
+          incoming().numericId == existing().numericId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          isTogglePlanDayAction();
+        allow delete: if false;
+      }
+
+      match /dailyGoals/{dateKey} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidDateKey(dateKey);
+        allow list: if false;
+        allow create: if isOwner(userId) &&
+          isValidId(userId) &&
+          isValidDateKey(dateKey) &&
+          isValidDailyGoal(incoming(), userId, dateKey) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time;
+        allow update: if isOwner(userId) &&
+          isValidId(userId) &&
+          isValidDateKey(dateKey) &&
+          isValidDailyGoal(incoming(), userId, dateKey) &&
+          incoming().uid == existing().uid &&
+          incoming().dateKey == existing().dateKey &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          isUpdateDailyGoalAction();
+        allow delete: if false;
+      }
+    }
+  }
+}

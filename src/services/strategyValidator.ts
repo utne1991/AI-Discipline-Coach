@@ -1,8 +1,9 @@
 import {
-  evaluateCautionStatus,
+  evaluateSafetyProfile,
   type EquipmentOption,
   type FitnessLevel,
   type GoalType,
+  type SafetyProfile,
   type SportOption,
   type WorkoutDay,
 } from '../shared/types.ts';
@@ -31,11 +32,21 @@ export interface RawStrategyPayload {
   days?: unknown;
 }
 
+export interface StrategyValidationMetrics {
+  workoutDayCount: number;
+  totalWeeklyMinutes: number;
+  totalWeeklySets: number;
+  maxConsecutiveWorkoutDays: number;
+  maxConsecutiveHighIntensityDays: number;
+}
+
 export interface StrategyValidationResult {
   valid: boolean;
   errors: string[];
   warnings: string[];
   normalizedDays: WorkoutDay[];
+  safetyProfile?: SafetyProfile;
+  metrics?: StrategyValidationMetrics;
 }
 
 const VALID_INTENSITIES = new Set(['Nhẹ', 'Trung bình', 'Cao']);
@@ -70,6 +81,20 @@ const YOUTH_BANNED_TERMS = [
   'leg press nặng',
   'clean and jerk',
   'snatch',
+  'tạ tối đa',
+  'plyometric nặng',
+  'depth jump',
+];
+
+const TEEN_BANNED_TERMS = [
+  '1rm',
+  'tạ tối đa',
+  'max effort',
+  'clean and jerk',
+  'snatch',
+  'depth jump',
+  'tập đến kiệt sức',
+  'to failure',
 ];
 
 const SENIOR_BANNED_TERMS = [
@@ -170,12 +195,43 @@ function isNonEmptyString(val: unknown, minLen = 1): val is string {
   return typeof val === 'string' && val.trim().length >= minLen;
 }
 
-function parseMaxSets(setsText: string): number | null {
+export function parseMaxSets(setsText: string): number | null {
   const matches = setsText.match(/\d+/g);
   if (!matches || matches.length === 0) return null;
   const nums = matches.map((n) => Number(n)).filter((n) => Number.isFinite(n));
   if (nums.length === 0) return null;
   return Math.max(...nums);
+}
+
+export interface ParsedPrescription {
+  kind: 'reps' | 'minutes' | 'seconds' | 'unknown';
+  maxValue: number | null;
+}
+
+export function parseRepsOrDuration(text: string): ParsedPrescription {
+  const normalized = text.toLowerCase().trim();
+  const matches = normalized.match(/\d+(?:[.,]\d+)?/g);
+  if (!matches || matches.length === 0) {
+    return { kind: 'unknown', maxValue: null };
+  }
+  const nums = matches
+    .map((n) => Number(n.replace(',', '.')))
+    .filter((n) => Number.isFinite(n));
+  if (nums.length === 0) {
+    return { kind: 'unknown', maxValue: null };
+  }
+  const maxValue = Math.max(...nums);
+
+  if (/(phút|min|mins|minute|minutes)\b/i.test(normalized)) {
+    return { kind: 'minutes', maxValue };
+  }
+  if (/(giây|sec|secs|second|seconds|\bs\b)/i.test(normalized)) {
+    return { kind: 'seconds', maxValue };
+  }
+  if (/(lần|rep|reps|bước|step|steps|vòng|mỗi bên|each side)/i.test(normalized)) {
+    return { kind: 'reps', maxValue };
+  }
+  return { kind: 'unknown', maxValue };
 }
 
 function findBannedMatch(haystack: string, terms: string[]): string | null {
@@ -212,20 +268,45 @@ export function validateWorkoutStrategy(
     errors.push('Thiếu tóm tắt chiến lược hợp lệ (strategySummary).');
   }
 
-  const { cautiousMode } = evaluateCautionStatus(
-    profile.age,
-    profile.healthLimitations,
-    profile.healthNotes,
-    profile.weightKg,
-    profile.heightCm
-  );
+  const safetyProfile = evaluateSafetyProfile({
+    age: profile.age,
+    healthLimitations: profile.healthLimitations,
+    healthNotes: profile.healthNotes,
+    weightKg: profile.weightKg,
+    heightCm: profile.heightCm,
+    fitnessLevel: profile.fitnessLevel,
+    daysPerWeek: profile.daysPerWeek,
+  });
 
-  if (!isNonEmptyString(payload.safetyAlert, cautiousMode ? 30 : 12)) {
+  const { cautiousMode, isMinor, requiresMedicalClearance, loadLimits } = safetyProfile;
+
+  const safetyAlertText = isNonEmptyString(payload.safetyAlert, 1)
+    ? payload.safetyAlert.trim()
+    : '';
+  if (!isNonEmptyString(safetyAlertText, cautiousMode ? 30 : 12)) {
     errors.push(
       cautiousMode
         ? 'Chế độ thận trọng bắt buộc phải có cảnh báo an toàn (safetyAlert) chi tiết (>= 30 ký tự).'
         : 'Thiếu nội dung lưu ý an toàn (safetyAlert).'
     );
+  } else {
+    const lowerAlert = safetyAlertText.toLowerCase();
+    if (
+      requiresMedicalClearance &&
+      !/(bác sĩ|chuyên gia y tế|y khoa|vật lý trị liệu|doctor|physician)/i.test(lowerAlert)
+    ) {
+      errors.push(
+        'Hồ sơ thuộc nhóm cần đánh giá sức khỏe chuyên môn nhưng safetyAlert chưa nêu khuyến nghị tham khảo bác sĩ hoặc chuyên gia y tế.'
+      );
+    }
+    if (
+      isMinor &&
+      !/(giám hộ|phụ huynh|người lớn|huấn luyện viên|guardian|parent)/i.test(lowerAlert)
+    ) {
+      errors.push(
+        'Hồ sơ người dưới 18 tuổi nhưng safetyAlert chưa nêu yêu cầu đồng hành/giám sát của phụ huynh hoặc người giám hộ.'
+      );
+    }
   }
 
   if (
@@ -240,14 +321,13 @@ export function validateWorkoutStrategy(
     errors.push(
       `Lịch tập tuần phải có đúng 7 ngày (nhận được ${Array.isArray(payload.days) ? payload.days.length : 0} ngày).`
     );
-    return { valid: false, errors, warnings, normalizedDays };
+    return { valid: false, errors, warnings, normalizedDays, safetyProfile };
   }
 
   const seenDayIndices = new Set<number>();
   let workoutDayCount = 0;
-  let consecutiveWorkoutDays = 0;
-  let maxConsecutiveWorkoutDays = 0;
-  let consecutiveHighIntensityDays = 0;
+  let totalWeeklyMinutes = 0;
+  let totalWeeklySets = 0;
 
   const combinedLimitationsText =
     `${profile.healthLimitations.join(' ')} ${profile.healthNotes}`.toLowerCase();
@@ -301,9 +381,11 @@ export function validateWorkoutStrategy(
       );
     }
 
-    if (cautiousMode && intensity === 'Cao') {
+    if (!loadLimits.allowHighIntensity && intensity === 'Cao') {
       errors.push(
-        `Ngày ${dayIndex || i + 1} có cường độ "Cao", vi phạm giới hạn an toàn của Chế độ thận trọng.`
+        cautiousMode
+          ? `Ngày ${dayIndex || i + 1} có cường độ "Cao", vi phạm giới hạn an toàn của Chế độ thận trọng.`
+          : `Ngày ${dayIndex || i + 1} có cường độ "Cao", vượt ngưỡng an toàn cho nhóm tuổi/trình độ hiện tại.`
       );
     }
     if (isRestDay && VALID_INTENSITIES.has(intensity) && intensity !== 'Nhẹ') {
@@ -320,30 +402,12 @@ export function validateWorkoutStrategy(
         );
       }
     } else {
-      const maxMinutes = cautiousMode ? 60 : 120;
-      if (estimatedMinutes < 15 || estimatedMinutes > maxMinutes) {
-        errors.push(
-          `Ngày tập ${dayIndex || i + 1} có thời lượng ${estimatedMinutes} phút, vượt ngưỡng an toàn (15–${maxMinutes} phút).`
-        );
-      }
-    }
-
-    if (isRestDay) {
-      consecutiveWorkoutDays = 0;
-      consecutiveHighIntensityDays = 0;
-    } else {
       workoutDayCount += 1;
-      consecutiveWorkoutDays += 1;
-      maxConsecutiveWorkoutDays = Math.max(maxConsecutiveWorkoutDays, consecutiveWorkoutDays);
-      if (intensity === 'Cao') {
-        consecutiveHighIntensityDays += 1;
-        if (consecutiveHighIntensityDays >= 3) {
-          errors.push(
-            `Ngày ${dayIndex || i + 1}: có từ 3 ngày liên tiếp cường độ "Cao", thiếu thời gian phục hồi an toàn.`
-          );
-        }
-      } else {
-        consecutiveHighIntensityDays = 0;
+      totalWeeklyMinutes += estimatedMinutes;
+      if (estimatedMinutes < 15 || estimatedMinutes > loadLimits.maxSessionMinutes) {
+        errors.push(
+          `Ngày tập ${dayIndex || i + 1} có thời lượng ${estimatedMinutes} phút, vượt ngưỡng an toàn (15–${loadLimits.maxSessionMinutes} phút).`
+        );
       }
     }
 
@@ -352,9 +416,9 @@ export function validateWorkoutStrategy(
       continue;
     }
 
-    if (!isRestDay && (day.exercises.length < 1 || day.exercises.length > 8)) {
+    if (!isRestDay && (day.exercises.length < 1 || day.exercises.length > loadLimits.maxExercisesPerDay)) {
       errors.push(
-        `Ngày tập ${dayIndex || i + 1} phải có từ 1 đến 8 bài tập (hiện có ${day.exercises.length}).`
+        `Ngày tập ${dayIndex || i + 1} phải có từ 1 đến ${loadLimits.maxExercisesPerDay} bài tập (hiện có ${day.exercises.length}).`
       );
     }
     if (isRestDay && day.exercises.length > 2) {
@@ -363,6 +427,7 @@ export function validateWorkoutStrategy(
       );
     }
 
+    let dailySetsTotal = 0;
     const validatedExercises = [];
     for (let j = 0; j < day.exercises.length; j++) {
       const rawEx = day.exercises[j];
@@ -380,31 +445,76 @@ export function validateWorkoutStrategy(
       if (!exName) {
         errors.push(`Ngày ${dayIndex || i + 1}, bài ${j + 1}: thiếu tên bài tập.`);
       }
+
+      let parsedSets: number | null = null;
       if (!exSets) {
         errors.push(`Ngày ${dayIndex || i + 1}, bài ${j + 1}: thiếu số hiệp (sets).`);
       } else {
-        const parsedSets = parseMaxSets(exSets);
-        const maxAllowedSets = cautiousMode ? 5 : 8;
-        if (parsedSets === null || parsedSets < 1 || parsedSets > maxAllowedSets) {
+        parsedSets = parseMaxSets(exSets);
+        if (parsedSets === null || parsedSets < 1 || parsedSets > loadLimits.maxSetsPerExercise) {
           errors.push(
-            `Ngày ${dayIndex || i + 1}, bài "${exName || j + 1}": số hiệp "${exSets}" vượt giới hạn (1–${maxAllowedSets}).`
+            `Ngày ${dayIndex || i + 1}, bài "${exName || j + 1}": số hiệp "${exSets}" vượt giới hạn (1–${loadLimits.maxSetsPerExercise}).`
           );
+        } else if (!isRestDay) {
+          dailySetsTotal += parsedSets;
         }
       }
+
       if (!exReps) {
         errors.push(
           `Ngày ${dayIndex || i + 1}, bài "${exName || j + 1}": thiếu số lần hoặc thời lượng.`
         );
+      } else if (!isRestDay) {
+        const prescription = parseRepsOrDuration(exReps);
+        if (prescription.maxValue !== null && prescription.maxValue <= 0) {
+          errors.push(
+            `Ngày ${dayIndex || i + 1}, bài "${exName || j + 1}": số lần/thời lượng "${exReps}" phải lớn hơn 0.`
+          );
+        } else if (
+          prescription.kind === 'reps' &&
+          prescription.maxValue !== null &&
+          prescription.maxValue > loadLimits.maxRepsPerSet
+        ) {
+          errors.push(
+            `Ngày ${dayIndex || i + 1}, bài "${exName || j + 1}": số lần "${exReps}" vượt giới hạn an toàn tối đa ${loadLimits.maxRepsPerSet} lần/hiệp.`
+          );
+        } else if (
+          prescription.kind === 'minutes' &&
+          prescription.maxValue !== null &&
+          prescription.maxValue > loadLimits.maxExerciseDurationMinutes
+        ) {
+          errors.push(
+            `Ngày ${dayIndex || i + 1}, bài "${exName || j + 1}": thời lượng bài "${exReps}" vượt giới hạn an toàn tối đa ${loadLimits.maxExerciseDurationMinutes} phút.`
+          );
+        } else if (
+          prescription.kind === 'seconds' &&
+          prescription.maxValue !== null &&
+          prescription.maxValue > loadLimits.maxExerciseDurationMinutes * 60
+        ) {
+          errors.push(
+            `Ngày ${dayIndex || i + 1}, bài "${exName || j + 1}": thời lượng "${exReps}" vượt ngưỡng an toàn.`
+          );
+        }
       }
-      if (!Number.isFinite(restSeconds) || !Number.isInteger(restSeconds) || restSeconds < 0 || restSeconds > 300) {
+
+      if (
+        !Number.isFinite(restSeconds) ||
+        !Number.isInteger(restSeconds) ||
+        restSeconds < 0 ||
+        restSeconds > 300
+      ) {
         errors.push(
           `Ngày ${dayIndex || i + 1}, bài "${exName || j + 1}": thời gian nghỉ (${String(ex.restSeconds)} giây) không hợp lệ (0–300 giây).`
         );
-      } else if (!isRestDay && cautiousMode && restSeconds < 45) {
-        errors.push(
-          `Ngày ${dayIndex || i + 1}, bài "${exName || j + 1}": thời gian nghỉ ${restSeconds} giây quá ngắn cho Chế độ thận trọng (tối thiểu 45 giây).`
-        );
+      } else if (!isRestDay) {
+        const requiresMinRest = cautiousMode || (parsedSets !== null && parsedSets > 1);
+        if (requiresMinRest && restSeconds < loadLimits.minRestSeconds) {
+          errors.push(
+            `Ngày ${dayIndex || i + 1}, bài "${exName || j + 1}": thời gian nghỉ ${restSeconds} giây quá ngắn (tối thiểu ${loadLimits.minRestSeconds} giây để phục hồi an toàn).`
+          );
+        }
       }
+
       if (!exNote) {
         errors.push(`Ngày ${dayIndex || i + 1}, bài "${exName || j + 1}": thiếu ghi chú kỹ thuật/an toàn.`);
       }
@@ -420,16 +530,23 @@ export function validateWorkoutStrategy(
         }
       }
 
-      if (Number.isFinite(profile.age) && profile.age > 0 && profile.age < 16) {
+      if (safetyProfile.ageGroup === 'youth') {
         const hit = findBannedMatch(textToScan, YOUTH_BANNED_TERMS);
         if (hit) {
           errors.push(
             `Ngày ${dayIndex || i + 1}, bài "${exName}": chứa bài tập tạ nặng ("${hit}") không an toàn cho người dưới 16 tuổi.`
           );
         }
+      } else if (safetyProfile.ageGroup === 'teen') {
+        const hit = findBannedMatch(textToScan, TEEN_BANNED_TERMS);
+        if (hit) {
+          errors.push(
+            `Ngày ${dayIndex || i + 1}, bài "${exName}": chứa nội dung quá tải ("${hit}") không phù hợp cho vị thành niên (16–17 tuổi).`
+          );
+        }
       }
 
-      if (Number.isFinite(profile.age) && profile.age > 60) {
+      if (safetyProfile.ageGroup === 'senior') {
         const hit = findBannedMatch(textToScan, SENIOR_BANNED_TERMS);
         if (hit) {
           errors.push(
@@ -469,9 +586,18 @@ export function validateWorkoutStrategy(
         name: exName,
         sets: exSets,
         repsOrDuration: exReps,
-        restSeconds: Number.isFinite(restSeconds) ? restSeconds : 60,
+        restSeconds: Number.isFinite(restSeconds) ? restSeconds : loadLimits.minRestSeconds,
         note: exNote,
       });
+    }
+
+    if (!isRestDay) {
+      totalWeeklySets += dailySetsTotal;
+      if (dailySetsTotal > loadLimits.maxDailySets) {
+        errors.push(
+          `Ngày tập ${dayIndex || i + 1}: tổng khối lượng ${dailySetsTotal} hiệp vượt giới hạn an toàn trong ngày (tối đa ${loadLimits.maxDailySets} hiệp).`
+        );
+      }
     }
 
     normalizedDays.push({
@@ -498,15 +624,63 @@ export function validateWorkoutStrategy(
     }
   }
 
+  // Sort strictly by dayIndex (1..7) BEFORE evaluating consecutive workout & recovery patterns
+  normalizedDays.sort((a, b) => a.dayIndex - b.dayIndex);
+
+  let consecutiveWorkoutDays = 0;
+  let maxConsecutiveWorkoutDays = 0;
+  let consecutiveHighIntensityDays = 0;
+  let maxConsecutiveHighIntensityDays = 0;
+
+  for (const day of normalizedDays) {
+    if (day.isRestDay) {
+      consecutiveWorkoutDays = 0;
+      consecutiveHighIntensityDays = 0;
+    } else {
+      consecutiveWorkoutDays += 1;
+      maxConsecutiveWorkoutDays = Math.max(maxConsecutiveWorkoutDays, consecutiveWorkoutDays);
+      if (day.intensity === 'Cao') {
+        consecutiveHighIntensityDays += 1;
+        maxConsecutiveHighIntensityDays = Math.max(
+          maxConsecutiveHighIntensityDays,
+          consecutiveHighIntensityDays
+        );
+      } else {
+        consecutiveHighIntensityDays = 0;
+      }
+    }
+  }
+
   if (workoutDayCount !== profile.daysPerWeek) {
     errors.push(
       `Số ngày tập chính (${workoutDayCount}) không khớp với lịch đăng ký (${profile.daysPerWeek} ngày/tuần).`
     );
   }
 
-  if (cautiousMode && profile.daysPerWeek <= 4 && maxConsecutiveWorkoutDays > 2) {
+  if (totalWeeklyMinutes > loadLimits.maxWeeklyMinutes) {
     errors.push(
-      `Chế độ thận trọng với <= 4 buổi/tuần không được xếp ${maxConsecutiveWorkoutDays} ngày tập liên tiếp mà không xen kẽ ngày nghỉ phục hồi.`
+      `Tổng thời lượng tập cả tuần (${totalWeeklyMinutes} phút) vượt ngưỡng khối lượng an toàn (tối đa ${loadLimits.maxWeeklyMinutes} phút/tuần).`
+    );
+  }
+
+  if (totalWeeklySets > loadLimits.maxWeeklySets) {
+    errors.push(
+      `Tổng số hiệp cả tuần (${totalWeeklySets} hiệp) vượt ngưỡng khối lượng an toàn (tối đa ${loadLimits.maxWeeklySets} hiệp/tuần).`
+    );
+  }
+
+  if (maxConsecutiveWorkoutDays > loadLimits.maxConsecutiveWorkoutDays) {
+    errors.push(
+      `Lịch tập xếp ${maxConsecutiveWorkoutDays} ngày tập liên tiếp không xen kẽ phục hồi (tối đa ${loadLimits.maxConsecutiveWorkoutDays} ngày liên tiếp cho hồ sơ hiện tại).`
+    );
+  }
+
+  if (
+    loadLimits.allowHighIntensity &&
+    maxConsecutiveHighIntensityDays > loadLimits.maxConsecutiveHighDays
+  ) {
+    errors.push(
+      `Có ${maxConsecutiveHighIntensityDays} ngày liên tiếp cường độ "Cao" (tối đa ${loadLimits.maxConsecutiveHighDays} ngày liên tiếp để đảm bảo phục hồi).`
     );
   }
 
@@ -516,12 +690,18 @@ export function validateWorkoutStrategy(
     );
   }
 
-  normalizedDays.sort((a, b) => a.dayIndex - b.dayIndex);
-
   return {
     valid: errors.length === 0,
     errors,
     warnings,
     normalizedDays,
+    safetyProfile,
+    metrics: {
+      workoutDayCount,
+      totalWeeklyMinutes,
+      totalWeeklySets,
+      maxConsecutiveWorkoutDays,
+      maxConsecutiveHighIntensityDays,
+    },
   };
 }

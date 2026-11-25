@@ -1,19 +1,34 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  parseRepsOrDuration,
   validateWorkoutStrategy,
   type ValidatorGoalContext,
   type ValidatorProfileContext,
 } from '../src/services/strategyValidator.ts';
 
-function buildValid7DayPlan(workoutDayIndices: number[], cautious = false) {
+function buildValid7DayPlan(
+  workoutDayIndices: number[],
+  options?: { cautious?: boolean; minor?: boolean; medical?: boolean }
+) {
+  const cautious = Boolean(options?.cautious);
+  const minor = Boolean(options?.minor);
+  const medical = Boolean(options?.medical);
+
   const labels = ['Thứ 2', 'Thứ 3', 'Thứ 4', 'Thứ 5', 'Thứ 6', 'Thứ 7', 'Chủ nhật'];
+  let safetyAlert = 'Khởi động kỹ trước buổi tập và giữ đúng kỹ thuật ở mọi hiệp tập.';
+  if (minor) {
+    safetyAlert =
+      'Người dưới 18 tuổi cần có sự đồng ý và giám sát của phụ huynh / người giám hộ. Ưu tiên kỹ thuật thể trọng chuẩn và dừng ngay nếu mệt.';
+  } else if (medical || cautious) {
+    safetyAlert =
+      'Chế độ thận trọng đang bật: chỉ tập động tác tác động thấp, dừng ngay nếu đau nhói khớp hoặc chóng mặt và tham khảo ý kiến bác sĩ chuyên môn.';
+  }
+
   return {
     strategySummary:
       'Chiến lược Tuần 1 tập trung xây dựng thói quen kỷ luật với cường độ phù hợp và kiểm soát kỹ thuật chuẩn.',
-    safetyAlert: cautious
-      ? 'Chế độ thận trọng đang bật: chỉ tập động tác tác động thấp, dừng ngay nếu đau nhói khớp hoặc chóng mặt và tham khảo ý kiến bác sĩ.'
-      : 'Khởi động kỹ trước buổi tập và giữ đúng kỹ thuật ở mọi hiệp tập.',
+    safetyAlert,
     coachPrinciples: [
       'Hoàn thành đúng lịch trước khi tăng độ khó.',
       'Ngủ đủ giấc và uống đủ nước mỗi ngày.',
@@ -52,7 +67,7 @@ function buildValid7DayPlan(workoutDayIndices: number[], cautious = false) {
         title: 'Buổi tập nền tảng cơ bản',
         focusArea: 'Toàn thân kiểm soát',
         estimatedMinutes: 35,
-        intensity: cautious ? 'Nhẹ' : 'Trung bình',
+        intensity: cautious || minor || medical ? 'Nhẹ' : 'Trung bình',
         warmup: 'Xoay khớp cổ tay, vai, hông và đi bộ tại chỗ 8 phút.',
         cooldown: 'Giãn cơ nhẹ kết hợp thở chậm 5 phút.',
         safetyNote: 'Giữ lưng thẳng, dừng ngay nếu thấy khó chịu ở khớp.',
@@ -94,8 +109,15 @@ const defaultGoal: ValidatorGoalContext = {
   durationWeeks: 8,
 };
 
+test('parseRepsOrDuration extracts reps and duration minutes accurately', () => {
+  assert.deepEqual(parseRepsOrDuration('10-12 lần'), { reps: 12, durationMinutes: null });
+  assert.deepEqual(parseRepsOrDuration('45 giây'), { reps: null, durationMinutes: 0.75 });
+  assert.deepEqual(parseRepsOrDuration('20 phút'), { reps: null, durationMinutes: 20 });
+  assert.deepEqual(parseRepsOrDuration('15 reps'), { reps: 15, durationMinutes: null });
+});
+
 test('accepts a valid 7-day plan matching daysPerWeek and equipment', () => {
-  const plan = buildValid7DayPlan([1, 3, 5], false);
+  const plan = buildValid7DayPlan([1, 3, 5]);
   const res = validateWorkoutStrategy(plan, standardProfile, defaultGoal);
   assert.equal(res.valid, true, `Unexpected errors: ${res.errors.join('; ')}`);
   assert.equal(res.normalizedDays.length, 7);
@@ -105,11 +127,11 @@ test('rejects invalid JSON shape, missing days, or duplicate dayIndex', () => {
   const notObject = validateWorkoutStrategy('invalid', standardProfile, defaultGoal);
   assert.equal(notObject.valid, false);
 
-  const missingDay = buildValid7DayPlan([1, 3, 5], false);
+  const missingDay = buildValid7DayPlan([1, 3, 5]);
   missingDay.days.pop();
   assert.equal(validateWorkoutStrategy(missingDay, standardProfile, defaultGoal).valid, false);
 
-  const dupDay = buildValid7DayPlan([1, 3, 5], false);
+  const dupDay = buildValid7DayPlan([1, 3, 5]);
   dupDay.days[6].dayIndex = 1;
   const dupRes = validateWorkoutStrategy(dupDay, standardProfile, defaultGoal);
   assert.equal(dupRes.valid, false);
@@ -117,10 +139,42 @@ test('rejects invalid JSON shape, missing days, or duplicate dayIndex', () => {
 });
 
 test('rejects mismatched workout day count vs profile.daysPerWeek', () => {
-  const plan = buildValid7DayPlan([1, 2, 3, 4], false); // 4 workout days instead of 3
+  const plan = buildValid7DayPlan([1, 2, 3, 4]); // 4 workout days instead of 3
   const res = validateWorkoutStrategy(plan, standardProfile, defaultGoal);
   assert.equal(res.valid, false);
   assert.ok(res.errors.some((e) => e.includes('không khớp')));
+});
+
+test('sorts days by dayIndex BEFORE evaluating consecutive workout day limits', () => {
+  const cautiousProfile: ValidatorProfileContext = {
+    ...standardProfile,
+    age: 63,
+    daysPerWeek: 3,
+  };
+  // Workout days are 1, 2, 3 (3 consecutive days — violates cautious max 2),
+  // but AI returns the array out of order so adjacent items in raw JSON are not consecutive.
+  const consecutivePlan = buildValid7DayPlan([1, 2, 3], { cautious: true });
+  consecutivePlan.days = [
+    consecutivePlan.days[0], // day 1 (workout)
+    consecutivePlan.days[4], // day 5 (rest)
+    consecutivePlan.days[1], // day 2 (workout)
+    consecutivePlan.days[5], // day 6 (rest)
+    consecutivePlan.days[2], // day 3 (workout)
+    consecutivePlan.days[3], // day 4 (rest)
+    consecutivePlan.days[6], // day 7 (rest)
+  ];
+
+  const res = validateWorkoutStrategy(consecutivePlan, cautiousProfile, defaultGoal);
+  assert.equal(res.valid, false);
+  assert.ok(
+    res.errors.some((e) => e.includes('liên tiếp')),
+    `Expected consecutive-day error even with unsorted days, got: ${res.errors.join('; ')}`
+  );
+  // Also confirm normalizedDays is sorted chronologically 1..7
+  assert.deepEqual(
+    res.normalizedDays.map((d) => d.dayIndex),
+    [1, 2, 3, 4, 5, 6, 7]
+  );
 });
 
 test('rejects High intensity, short rest, or unsafe exercises in Cautious Mode', () => {
@@ -130,58 +184,93 @@ test('rejects High intensity, short rest, or unsafe exercises in Cautious Mode',
     healthLimitations: ['Đau khớp gối', 'Tim mạch / Huyết áp'],
   };
 
-  const highIntensityPlan = buildValid7DayPlan([1, 3, 5], true);
+  const highIntensityPlan = buildValid7DayPlan([1, 3, 5], { cautious: true, medical: true });
   highIntensityPlan.days[0].intensity = 'Cao';
   const highRes = validateWorkoutStrategy(highIntensityPlan, cautiousProfile, defaultGoal);
   assert.equal(highRes.valid, false);
-  assert.ok(highRes.errors.some((e) => e.includes('Chế độ thận trọng')));
+  assert.ok(highRes.errors.some((e) => e.includes('Chế độ thận trọng') || e.includes('giới hạn')));
 
-  const burpeePlan = buildValid7DayPlan([1, 3, 5], true);
+  const burpeePlan = buildValid7DayPlan([1, 3, 5], { cautious: true, medical: true });
   burpeePlan.days[0].exercises[0].name = 'Burpee bật nhảy nhanh';
   const burpeeRes = validateWorkoutStrategy(burpeePlan, cautiousProfile, defaultGoal);
   assert.equal(burpeeRes.valid, false);
   assert.ok(burpeeRes.errors.some((e) => e.includes('tác động mạnh')));
 
-  const shortRestPlan = buildValid7DayPlan([1, 3, 5], true);
+  const shortRestPlan = buildValid7DayPlan([1, 3, 5], { cautious: true, medical: true });
   shortRestPlan.days[0].exercises[0].restSeconds = 15;
   const restRes = validateWorkoutStrategy(shortRestPlan, cautiousProfile, defaultGoal);
   assert.equal(restRes.valid, false);
   assert.ok(restRes.errors.some((e) => e.includes('thời gian nghỉ')));
 });
 
-test('rejects heavy barbell exercises for youth (<16) and gym machines when equipment=none', () => {
+test('enforces rep limits, per-exercise duration, daily sets, and weekly training load caps', () => {
+  const excessRepsPlan = buildValid7DayPlan([1, 3, 5]);
+  excessRepsPlan.days[0].exercises[0].repsOrDuration = '120 lần';
+  const repsRes = validateWorkoutStrategy(excessRepsPlan, standardProfile, defaultGoal);
+  assert.equal(repsRes.valid, false);
+  assert.ok(repsRes.errors.some((e) => e.includes('số lần')));
+
+  const excessExerciseDurationPlan = buildValid7DayPlan([1, 3, 5]);
+  excessExerciseDurationPlan.days[0].exercises[0].repsOrDuration = '95 phút';
+  const durRes = validateWorkoutStrategy(excessExerciseDurationPlan, standardProfile, defaultGoal);
+  assert.equal(durRes.valid, false);
+  assert.ok(durRes.errors.some((e) => e.includes('thời lượng bài tập')));
+
+  const excessDailySetsPlan = buildValid7DayPlan([1, 3, 5]);
+  excessDailySetsPlan.days[0].exercises = [
+    { name: 'Squat', sets: '5 hiệp', repsOrDuration: '10 lần', restSeconds: 60, note: 'OK' },
+    { name: 'Push-up', sets: '5 hiệp', repsOrDuration: '10 lần', restSeconds: 60, note: 'OK' },
+    { name: 'Lunge', sets: '5 hiệp', repsOrDuration: '10 lần', restSeconds: 60, note: 'OK' },
+    { name: 'Plank', sets: '5 hiệp', repsOrDuration: '30 giây', restSeconds: 60, note: 'OK' },
+  ]; // 20 sets in one day > beginner cap (16)
+  const dailySetsRes = validateWorkoutStrategy(excessDailySetsPlan, standardProfile, defaultGoal);
+  assert.equal(dailySetsRes.valid, false);
+  assert.ok(dailySetsRes.errors.some((e) => e.includes('tổng khối lượng')));
+});
+
+test('enforces dedicated safety rules for youth (<16), teen (16-17), and medical clearance profiles', () => {
   const youthProfile: ValidatorProfileContext = {
     ...standardProfile,
     age: 14,
     equipment: 'gym',
   };
-  const barbellPlan = buildValid7DayPlan([1, 3, 5], true);
+  const barbellPlan = buildValid7DayPlan([1, 3, 5], { cautious: true, minor: true });
   barbellPlan.days[0].exercises[0].name = 'Deadlift với tạ đòn';
   const youthRes = validateWorkoutStrategy(barbellPlan, youthProfile, defaultGoal);
   assert.equal(youthRes.valid, false);
   assert.ok(youthRes.errors.some((e) => e.includes('dưới 16 tuổi')));
 
-  const noneEquipPlan = buildValid7DayPlan([1, 3, 5], false);
+  const teenProfile: ValidatorProfileContext = {
+    ...standardProfile,
+    age: 17,
+    fitnessLevel: 'intermediate',
+    equipment: 'gym',
+  };
+  const teen1RmPlan = buildValid7DayPlan([1, 3, 5], { cautious: true, minor: true });
+  teen1RmPlan.days[0].exercises[0].name = 'Thử sức 1RM Bench Press';
+  const teenRes = validateWorkoutStrategy(teen1RmPlan, teenProfile, defaultGoal);
+  assert.equal(teenRes.valid, false);
+  assert.ok(teenRes.errors.some((e) => e.includes('dưới 18 tuổi')));
+
+  const teenMissingGuardianAlert = buildValid7DayPlan([1, 3, 5], { cautious: true, minor: false });
+  const teenAlertRes = validateWorkoutStrategy(teenMissingGuardianAlert, teenProfile, defaultGoal);
+  assert.equal(teenAlertRes.valid, false);
+  assert.ok(teenAlertRes.errors.some((e) => e.includes('phụ huynh') || e.includes('giám hộ')));
+
+  const medicalProfile: ValidatorProfileContext = {
+    ...standardProfile,
+    age: 45,
+    healthLimitations: ['Tim mạch / Huyết áp'],
+  };
+  const missingDoctorAlert = buildValid7DayPlan([1, 3, 5], { cautious: true, medical: false });
+  missingDoctorAlert.safetyAlert = 'Tập nhẹ nhàng và hít thở đều trong suốt buổi tập.';
+  const medRes = validateWorkoutStrategy(missingDoctorAlert, medicalProfile, defaultGoal);
+  assert.equal(medRes.valid, false);
+  assert.ok(medRes.errors.some((e) => e.includes('bác sĩ') || e.includes('y tế')));
+
+  const noneEquipPlan = buildValid7DayPlan([1, 3, 5]);
   noneEquipPlan.days[0].exercises[0].name = 'Leg Press trên máy';
   const eqRes = validateWorkoutStrategy(noneEquipPlan, standardProfile, defaultGoal);
   assert.equal(eqRes.valid, false);
   assert.ok(eqRes.errors.some((e) => e.includes('Không dụng cụ')));
-});
-
-test('rejects invalid sets (>8 or 0) and consecutive workout overload in cautious mode', () => {
-  const cautiousProfile: ValidatorProfileContext = {
-    ...standardProfile,
-    age: 63,
-    daysPerWeek: 3,
-  };
-  const consecutivePlan = buildValid7DayPlan([1, 2, 3], true); // 3 consecutive days without rest
-  const consRes = validateWorkoutStrategy(consecutivePlan, cautiousProfile, defaultGoal);
-  assert.equal(consRes.valid, false);
-  assert.ok(consRes.errors.some((e) => e.includes('liên tiếp')));
-
-  const badSetsPlan = buildValid7DayPlan([1, 3, 5], false);
-  badSetsPlan.days[0].exercises[0].sets = '15 hiệp';
-  const setsRes = validateWorkoutStrategy(badSetsPlan, standardProfile, defaultGoal);
-  assert.equal(setsRes.valid, false);
-  assert.ok(setsRes.errors.some((e) => e.includes('số hiệp')));
 });

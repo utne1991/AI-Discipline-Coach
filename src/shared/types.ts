@@ -48,6 +48,19 @@ export interface GoalData {
   updatedAt?: string;
 }
 
+export type AiProviderName = 'gemini' | 'mock';
+
+export const CONSENT_POLICY_VERSION = '2026-11-v1';
+
+export interface ConsentRecord {
+  policyVersion: string;
+  aiHealthDataConsent: boolean;
+  guardianConsentConfirmed: boolean;
+  medicalClearanceAcknowledged: boolean;
+  consentedAt?: string;
+  updatedAt?: string;
+}
+
 export interface WorkoutPlanData {
   id: number;
   weekNumber: number;
@@ -61,7 +74,10 @@ export interface WorkoutPlanData {
   coachPrinciples: string[];
   scheduleJson: WorkoutDay[];
   completedDays: number[];
+  aiProvider?: AiProviderName;
+  isSimulated?: boolean;
   createdAt: string;
+  updatedAt?: string;
 }
 
 export interface BootstrapResponse {
@@ -84,6 +100,32 @@ export interface BmiEvaluation {
   isAdultClassification: boolean;
   category: string;
   guidance: string;
+}
+
+export interface SafetyLoadLimits {
+  allowHighIntensity: boolean;
+  maxSessionMinutes: number;
+  maxWeeklyMinutes: number;
+  maxExercisesPerDay: number;
+  maxSetsPerExercise: number;
+  maxDailySets: number;
+  maxWeeklySets: number;
+  maxRepsPerSet: number;
+  maxExerciseDurationMinutes: number;
+  minRestSeconds: number;
+  maxConsecutiveWorkoutDays: number;
+  maxConsecutiveHighDays: number;
+}
+
+export interface SafetyProfile {
+  ageGroup: AgeGroup;
+  isMinor: boolean;
+  requiresGuardianSupervision: boolean;
+  requiresMedicalClearance: boolean;
+  medicalClearanceReasons: string[];
+  cautiousMode: boolean;
+  cautionReasons: string[];
+  loadLimits: SafetyLoadLimits;
 }
 
 export const FITNESS_LEVEL_LABELS: Record<FitnessLevel, { label: string; desc: string }> = {
@@ -252,24 +294,62 @@ export function calculateBmi(
   };
 }
 
-export function evaluateCautionStatus(
-  age: number,
-  healthLimitations: string[],
-  healthNotes: string,
-  weightKg?: number,
-  heightCm?: number
-): { cautiousMode: boolean; cautionReasons: string[] } {
-  const reasons: string[] = [];
+const MEDICAL_CLEARANCE_NOTE_KEYWORDS = [
+  'đau ngực',
+  'tức ngực',
+  'ngất',
+  'chóng mặt',
+  'khó thở',
+  'phẫu thuật',
+  'mổ',
+  'gãy xương',
+  'thoát vị',
+  'rối loạn nhịp tim',
+  'mang thai',
+  'thai kỳ',
+  'tiểu đường',
+  'đột quỵ',
+  'huyết áp cao',
+  'chest pain',
+  'fainting',
+  'surgery',
+  'fracture',
+  'pregnant',
+];
 
-  if (!Number.isFinite(age) || age <= 0) {
-    reasons.push('Thiếu thông tin độ tuổi hợp lệ — áp dụng chế độ thận trọng mặc định');
-  } else if (age > 60) {
-    reasons.push(
-      `Độ tuổi trên 60 (${age} tuổi) — ưu tiên bảo vệ khớp, thăng bằng và kiểm soát nhịp tim`
+export function evaluateSafetyProfile(input: {
+  age: number;
+  healthLimitations: string[];
+  healthNotes: string;
+  weightKg?: number;
+  heightCm?: number;
+  fitnessLevel?: FitnessLevel;
+  daysPerWeek?: number;
+}): SafetyProfile {
+  const { age, healthLimitations, healthNotes, weightKg, heightCm } = input;
+  const fitnessLevel: FitnessLevel = input.fitnessLevel ?? 'beginner';
+  const daysPerWeek = Number.isFinite(input.daysPerWeek) ? Number(input.daysPerWeek) : 3;
+
+  const ageGroup = classifyAgeGroup(age);
+  const isMinor = ageGroup === 'youth' || ageGroup === 'teen';
+  const requiresGuardianSupervision = isMinor;
+
+  const cautionReasons: string[] = [];
+  const medicalClearanceReasons: string[] = [];
+
+  if (ageGroup === 'unknown') {
+    cautionReasons.push('Thiếu thông tin độ tuổi hợp lệ — áp dụng chế độ thận trọng mặc định');
+  } else if (ageGroup === 'youth') {
+    cautionReasons.push(
+      `Độ tuổi dưới 16 (${age} tuổi) — ưu tiên kỹ thuật thể trọng cơ thể, tránh tạ nặng và cần người giám hộ đồng hành`
     );
-  } else if (age < 16) {
-    reasons.push(
-      `Độ tuổi dưới 16 (${age} tuổi) — ưu tiên kỹ thuật thể trọng cơ thể, tránh tạ nặng và cần người lớn giám sát`
+  } else if (ageGroup === 'teen') {
+    cautionReasons.push(
+      `Độ tuổi vị thành niên (${age} tuổi) — không áp dụng ngưỡng BMI người lớn, ưu tiên kỹ thuật chuẩn, tránh nâng tạ tối đa (1RM) và cần phụ huynh/người giám hộ nắm rõ`
+    );
+  } else if (ageGroup === 'senior') {
+    cautionReasons.push(
+      `Độ tuổi trên 60 (${age} tuổi) — ưu tiên bảo vệ khớp, thăng bằng và kiểm soát nhịp tim`
     );
   }
 
@@ -277,7 +357,7 @@ export function evaluateCautionStatus(
     (weightKg !== undefined && (!Number.isFinite(weightKg) || weightKg <= 0)) ||
     (heightCm !== undefined && (!Number.isFinite(heightCm) || heightCm <= 0))
   ) {
-    reasons.push('Thiếu dữ liệu cân nặng hoặc chiều cao — áp dụng chế độ thận trọng mặc định');
+    cautionReasons.push('Thiếu dữ liệu cân nặng hoặc chiều cao — áp dụng chế độ thận trọng mặc định');
   } else if (
     weightKg !== undefined &&
     heightCm !== undefined &&
@@ -286,11 +366,15 @@ export function evaluateCautionStatus(
   ) {
     const bmiEval = evaluateBmi(weightKg, heightCm, age);
     if (bmiEval.value !== null && bmiEval.value < 16.5) {
-      reasons.push(
-        `BMI rất thấp (${bmiEval.value}) — cần tránh kiệt sức, ưu tiên bài tập nhẹ và phục hồi`
-      );
+      const msg = `BMI rất thấp (${bmiEval.value}) — cần đánh giá y tế trước khi tập tải trung bình/cao, tránh kiệt sức`;
+      cautionReasons.push(msg);
+      medicalClearanceReasons.push(msg);
+    } else if (bmiEval.value !== null && bmiEval.value >= 35) {
+      const msg = `BMI ở mức nguy cơ cao (${bmiEval.value}) — cần bác sĩ/chuyên gia y tế đánh giá tim mạch và khớp trước khi tăng tải`;
+      cautionReasons.push(msg);
+      medicalClearanceReasons.push(msg);
     } else if (bmiEval.value !== null && bmiEval.value >= 30) {
-      reasons.push(
+      cautionReasons.push(
         `BMI cao (${bmiEval.value}) — ưu tiên bài tập tác động thấp để bảo vệ khớp và tim mạch`
       );
     }
@@ -298,16 +382,149 @@ export function evaluateCautionStatus(
 
   const cleanLimitations = healthLimitations.map((s) => s.trim()).filter(Boolean);
   if (cleanLimitations.length > 0) {
-    reasons.push(`Giới hạn sức khỏe: ${cleanLimitations.join(', ')}`);
+    cautionReasons.push(`Giới hạn sức khỏe: ${cleanLimitations.join(', ')}`);
+  }
+
+  const normalizedLimitations = cleanLimitations.join(' ').toLowerCase();
+  if (normalizedLimitations.includes('tim mạch') || normalizedLimitations.includes('huyết áp')) {
+    medicalClearanceReasons.push(
+      'Có tiền sử Tim mạch / Huyết áp — cần được bác sĩ xác nhận mức vận động an toàn trước khi bắt đầu'
+    );
+  }
+  if (
+    (normalizedLimitations.includes('hô hấp') || normalizedLimitations.includes('hen')) &&
+    (age > 60 || isMinor)
+  ) {
+    medicalClearanceReasons.push(
+      'Tình trạng Hô hấp / Hen suyễn kết hợp nhóm tuổi nhạy cảm — cần tham khảo bác sĩ trước khi tập'
+    );
+  }
+  if (normalizedLimitations.includes('chấn thương')) {
+    medicalClearanceReasons.push(
+      'Đang phục hồi chấn thương cũ — cần chuyên gia vật lý trị liệu hoặc bác sĩ xác nhận biên độ vận động an toàn'
+    );
+  }
+  if (age >= 65 && cleanLimitations.length >= 2) {
+    medicalClearanceReasons.push(
+      'Người trên 65 tuổi có nhiều giới hạn sức khỏe đồng thời — cần đánh giá sức khỏe chuyên môn trước khi áp dụng giáo án'
+    );
   }
 
   const cleanNotes = healthNotes.trim();
   if (cleanNotes.length > 0) {
-    reasons.push(`Ghi chú sức khỏe bổ sung: ${cleanNotes}`);
+    cautionReasons.push('Có ghi chú sức khỏe bổ sung — áp dụng giới hạn tải an toàn');
+    const lowerNotes = cleanNotes.toLowerCase();
+    const matchedKeywords = MEDICAL_CLEARANCE_NOTE_KEYWORDS.filter((kw) => lowerNotes.includes(kw));
+    if (matchedKeywords.length > 0) {
+      medicalClearanceReasons.push(
+        `Ghi chú sức khỏe xuất hiện dấu hiệu cần đánh giá chuyên môn (${matchedKeywords.slice(0, 3).join(', ')})`
+      );
+    }
+  }
+
+  const requiresMedicalClearance = medicalClearanceReasons.length > 0;
+  const cautiousMode = cautionReasons.length > 0 || requiresMedicalClearance;
+
+  let allowHighIntensity = !cautiousMode && !isMinor && fitnessLevel !== 'beginner';
+  let maxSessionMinutes = cautiousMode ? 60 : fitnessLevel === 'beginner' ? 75 : 105;
+  let maxWeeklyMinutes = cautiousMode ? 240 : fitnessLevel === 'beginner' ? 300 : 420;
+  let maxExercisesPerDay = cautiousMode ? 6 : 8;
+  let maxSetsPerExercise = cautiousMode ? 5 : fitnessLevel === 'beginner' ? 5 : 8;
+  let maxDailySets = cautiousMode ? 15 : fitnessLevel === 'beginner' ? 16 : 24;
+  let maxWeeklySets = cautiousMode ? 60 : fitnessLevel === 'beginner' ? 70 : 120;
+  let maxRepsPerSet = cautiousMode ? 20 : 30;
+  let maxExerciseDurationMinutes = cautiousMode ? 35 : 60;
+  let minRestSeconds = cautiousMode ? 45 : 30;
+  let maxConsecutiveWorkoutDays = daysPerWeek <= 4 ? (cautiousMode ? 2 : 3) : daysPerWeek <= 5 ? 4 : 5;
+  let maxConsecutiveHighDays = allowHighIntensity ? 2 : 0;
+
+  if (ageGroup === 'youth') {
+    allowHighIntensity = false;
+    maxSessionMinutes = Math.min(maxSessionMinutes, 45);
+    maxWeeklyMinutes = Math.min(maxWeeklyMinutes, 180);
+    maxExercisesPerDay = Math.min(maxExercisesPerDay, 5);
+    maxSetsPerExercise = Math.min(maxSetsPerExercise, 4);
+    maxDailySets = Math.min(maxDailySets, 12);
+    maxWeeklySets = Math.min(maxWeeklySets, 48);
+    maxRepsPerSet = Math.min(maxRepsPerSet, 15);
+    maxExerciseDurationMinutes = Math.min(maxExerciseDurationMinutes, 25);
+    minRestSeconds = Math.max(minRestSeconds, 60);
+    maxConsecutiveWorkoutDays = Math.min(maxConsecutiveWorkoutDays, daysPerWeek <= 4 ? 2 : 3);
+    maxConsecutiveHighDays = 0;
+  } else if (ageGroup === 'teen') {
+    allowHighIntensity = false;
+    maxSessionMinutes = Math.min(maxSessionMinutes, 60);
+    maxWeeklyMinutes = Math.min(maxWeeklyMinutes, 270);
+    maxExercisesPerDay = Math.min(maxExercisesPerDay, 6);
+    maxSetsPerExercise = Math.min(maxSetsPerExercise, 5);
+    maxDailySets = Math.min(maxDailySets, 18);
+    maxWeeklySets = Math.min(maxWeeklySets, 72);
+    maxRepsPerSet = Math.min(maxRepsPerSet, 18);
+    maxExerciseDurationMinutes = Math.min(maxExerciseDurationMinutes, 35);
+    minRestSeconds = Math.max(minRestSeconds, 45);
+    maxConsecutiveHighDays = 0;
+  }
+
+  if (requiresMedicalClearance) {
+    allowHighIntensity = false;
+    maxSessionMinutes = Math.min(maxSessionMinutes, 45);
+    maxWeeklyMinutes = Math.min(maxWeeklyMinutes, 180);
+    maxSetsPerExercise = Math.min(maxSetsPerExercise, 4);
+    maxDailySets = Math.min(maxDailySets, 12);
+    maxWeeklySets = Math.min(maxWeeklySets, 48);
+    maxRepsPerSet = Math.min(maxRepsPerSet, 15);
+    maxExerciseDurationMinutes = Math.min(maxExerciseDurationMinutes, 25);
+    minRestSeconds = Math.max(minRestSeconds, 60);
+    maxConsecutiveHighDays = 0;
+  }
+
+  if (daysPerWeek === 7) {
+    maxConsecutiveWorkoutDays = 7;
+  } else if (daysPerWeek === 6) {
+    maxConsecutiveWorkoutDays = Math.max(maxConsecutiveWorkoutDays, 6);
   }
 
   return {
-    cautiousMode: reasons.length > 0,
-    cautionReasons: reasons,
+    ageGroup,
+    isMinor,
+    requiresGuardianSupervision,
+    requiresMedicalClearance,
+    medicalClearanceReasons,
+    cautiousMode,
+    cautionReasons,
+    loadLimits: {
+      allowHighIntensity,
+      maxSessionMinutes,
+      maxWeeklyMinutes,
+      maxExercisesPerDay,
+      maxSetsPerExercise,
+      maxDailySets,
+      maxWeeklySets,
+      maxRepsPerSet,
+      maxExerciseDurationMinutes,
+      minRestSeconds,
+      maxConsecutiveWorkoutDays,
+      maxConsecutiveHighDays,
+    },
+  };
+}
+
+export function evaluateCautionStatus(
+  age: number,
+  healthLimitations: string[],
+  healthNotes: string,
+  weightKg?: number,
+  heightCm?: number
+): { cautiousMode: boolean; cautionReasons: string[] } {
+  const safety = evaluateSafetyProfile({
+    age,
+    healthLimitations,
+    healthNotes,
+    weightKg,
+    heightCm,
+  });
+  return {
+    cautiousMode: safety.cautiousMode,
+    cautionReasons: safety.cautionReasons,
   };
 }

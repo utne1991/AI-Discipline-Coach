@@ -1,0 +1,376 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile preferences stored in Firebase Firestore, including daily browser workout reminder settings.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the profile owner.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "reminderEnabled": {
+          "type": "boolean",
+          "description": "Whether daily browser workout reminders are enabled."
+        },
+        "reminderTime": {
+          "type": "string",
+          "description": "Daily reminder time in 24-hour HH:mm format.",
+          "minLength": 5,
+          "maxLength": 5,
+          "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$"
+        },
+        "timezone": {
+          "type": "string",
+          "description": "IANA timezone identifier for the user's browser.",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the profile document was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the profile document was last updated."
+        }
+      },
+      "required": [
+        "uid",
+        "reminderEnabled",
+        "reminderTime",
+        "timezone",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "FitnessProfile": {
+      "title": "FitnessProfile",
+      "description": "User physical metrics, training frequency, equipment, and health limitations for AI Discipline Coach.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "fullName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "age": {
+          "type": "integer"
+        },
+        "weightKg": {
+          "type": "number"
+        },
+        "heightCm": {
+          "type": "number"
+        },
+        "fitnessLevel": {
+          "type": "string",
+          "enum": ["beginner", "intermediate", "advanced"]
+        },
+        "daysPerWeek": {
+          "type": "integer"
+        },
+        "equipment": {
+          "type": "string",
+          "enum": ["none", "home", "gym"]
+        },
+        "healthLimitations": {
+          "type": "array"
+        },
+        "healthNotes": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "fullName",
+        "age",
+        "weightKg",
+        "heightCm",
+        "fitnessLevel",
+        "daysPerWeek",
+        "equipment",
+        "healthLimitations",
+        "healthNotes",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "FitnessGoal": {
+      "title": "FitnessGoal",
+      "description": "User training sport, primary goal type, and program duration in weeks.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "sport": {
+          "type": "string",
+          "enum": ["running", "home_workout", "gym"]
+        },
+        "goalType": {
+          "type": "string",
+          "enum": ["weight_loss", "muscle_gain", "endurance"]
+        },
+        "durationWeeks": {
+          "type": "integer"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "sport",
+        "goalType",
+        "durationWeeks",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "WorkoutPlan": {
+      "title": "WorkoutPlan",
+      "description": "AI-generated and safety-validated 7-day Week 1 training plan with completion tracking.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "numericId": {
+          "type": "integer"
+        },
+        "weekNumber": {
+          "type": "integer"
+        },
+        "sport": {
+          "type": "string",
+          "enum": ["running", "home_workout", "gym"]
+        },
+        "goalType": {
+          "type": "string",
+          "enum": ["weight_loss", "muscle_gain", "endurance"]
+        },
+        "durationWeeks": {
+          "type": "integer"
+        },
+        "cautiousMode": {
+          "type": "boolean"
+        },
+        "cautionReasons": {
+          "type": "array"
+        },
+        "safetyAlert": {
+          "type": "string",
+          "maxLength": 1500
+        },
+        "strategySummary": {
+          "type": "string",
+          "maxLength": 3000
+        },
+        "coachPrinciples": {
+          "type": "array"
+        },
+        "scheduleJson": {
+          "type": "array"
+        },
+        "completedDays": {
+          "type": "array"
+        },
+        "aiProvider": {
+          "type": "string",
+          "enum": ["gemini", "mock"],
+          "description": "AI provider that generated the plan."
+        },
+        "isSimulated": {
+          "type": "boolean",
+          "description": "True when generated by local/DEV mock AI rather than live Gemini API."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "numericId",
+        "weekNumber",
+        "sport",
+        "goalType",
+        "durationWeeks",
+        "cautiousMode",
+        "cautionReasons",
+        "safetyAlert",
+        "strategySummary",
+        "coachPrinciples",
+        "scheduleJson",
+        "completedDays",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AiConsentRecord": {
+      "title": "AiConsentRecord",
+      "description": "Versioned user consent record governing AI health data processing, guardian approval for minors, and medical clearance acknowledgement.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "policyVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "aiHealthDataConsent": {
+          "type": "boolean"
+        },
+        "guardianConsentConfirmed": {
+          "type": "boolean"
+        },
+        "medicalClearanceAcknowledged": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "policyVersion",
+        "aiHealthDataConsent",
+        "guardianConsentConfirmed",
+        "medicalClearanceAcknowledged",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "DailyGoal": {
+      "title": "DailyGoal",
+      "description": "User-defined small daily discipline goal for a specific calendar date (YYYY-MM-DD) with completion status.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the goal owner.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "dateKey": {
+          "type": "string",
+          "description": "Local calendar date key in YYYY-MM-DD format.",
+          "minLength": 10,
+          "maxLength": 10,
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        },
+        "title": {
+          "type": "string",
+          "description": "Specific daily micro-goal text (e.g., Uống đủ 2L nước).",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "completed": {
+          "type": "boolean",
+          "description": "Whether today's daily goal has been marked as completed."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "dateKey",
+        "title",
+        "completed",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": {
+        "$ref": "#/entities/UserProfile"
+      },
+      "description": "Per-user profile document storing daily reminder configuration, keyed by Firebase Auth UID."
+    },
+    "/users/{userId}/appData/profile": {
+      "schema": {
+        "$ref": "#/entities/FitnessProfile"
+      },
+      "description": "User physical profile document (M01) scoped strictly to the owning user."
+    },
+    "/users/{userId}/appData/goal": {
+      "schema": {
+        "$ref": "#/entities/FitnessGoal"
+      },
+      "description": "User training goal document (M02) scoped strictly to the owning user."
+    },
+    "/users/{userId}/appData/consent": {
+      "schema": {
+        "$ref": "#/entities/AiConsentRecord"
+      },
+      "description": "User AI health-data, guardian, and medical clearance consent record scoped strictly to the owning user."
+    },
+    "/users/{userId}/plans/{planId}": {
+      "schema": {
+        "$ref": "#/entities/WorkoutPlan"
+      },
+      "description": "User Week 1 AI workout plans and daily check-in progress (M03)."
+    },
+    "/users/{userId}/dailyGoals/{dateKey}": {
+      "schema": {
+        "$ref": "#/entities/DailyGoal"
+      },
+      "description": "Per-day mini discipline goal and completion status keyed by YYYY-MM-DD."
+    }
+  }
+}

@@ -2,8 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { createMemoryRepository } from '../src/repositories/memoryRepository.ts';
 import { createApp, type AppRepository } from '../src/server/createApp.ts';
-import { StrategyValidationError } from '../src/services/aiStrategy.ts';
+import {
+  StrategyValidationError,
+  generateWeekOneStrategy,
+  type StrategyProfileInput,
+} from '../src/services/aiStrategy.ts';
 import type { WorkoutDay } from '../src/shared/types.ts';
 
 function makeSchedule(daysPerWeek = 3, cautious = false): WorkoutDay[] {
@@ -38,95 +43,57 @@ function makeSchedule(daysPerWeek = 3, cautious = false): WorkoutDay[] {
   });
 }
 
-function createInMemoryRepo(): AppRepository & { simulateDbError: boolean } {
-  let nextUserId = 1;
-  let nextPlanId = 1;
-  const usersByUid = new Map<string, { id: number; uid: string; email: string; displayName: string }>();
-  const profilesByUserId = new Map<number, any>();
-  const goalsByUserId = new Map<number, any>();
-  const plansById = new Map<number, any>();
-
+function createFaultInjectableRepo(): AppRepository & { simulateDbError: boolean } {
+  const base = createMemoryRepository();
   const repo: AppRepository & { simulateDbError: boolean } = {
+    providerName: 'memory',
     simulateDbError: false,
     async getOrCreateUser(uid, email, displayName) {
       if (repo.simulateDbError) {
         throw new Error('Không thể đồng bộ tài khoản lúc này. Vui lòng thử lại sau.');
       }
-      const existing = usersByUid.get(uid);
-      if (existing) return existing;
-      const created = { id: nextUserId++, uid, email, displayName };
-      usersByUid.set(uid, created);
-      return created;
+      return base.getOrCreateUser(uid, email, displayName);
     },
     async getUserBootstrapData(userId) {
       if (repo.simulateDbError) {
         throw new Error('Không thể tải dữ liệu người dùng lúc này. Vui lòng thử lại sau.');
       }
-      const userPlans = Array.from(plansById.values())
-        .filter((p) => p.userId === userId)
-        .sort((a, b) => b.id - a.id);
-      return {
-        profile: profilesByUserId.get(userId) ?? null,
-        goal: goalsByUserId.get(userId) ?? null,
-        latestPlan: userPlans[0] ?? null,
-        planCount: userPlans.length,
-      };
+      return base.getUserBootstrapData(userId);
     },
     async upsertUserProfile(userId, input) {
       if (repo.simulateDbError) {
         throw new Error('Không thể lưu hồ sơ người dùng. Vui lòng thử lại sau.');
       }
-      const record = { id: userId, userId, ...input, updatedAt: new Date().toISOString() };
-      profilesByUserId.set(userId, record);
-      return record;
+      return base.upsertUserProfile(userId, input);
     },
     async upsertUserGoal(userId, input) {
       if (repo.simulateDbError) {
         throw new Error('Không thể lưu mục tiêu tập luyện. Vui lòng thử lại sau.');
       }
-      const record = { id: userId, userId, ...input, updatedAt: new Date().toISOString() };
-      goalsByUserId.set(userId, record);
-      return record;
+      return base.upsertUserGoal(userId, input);
     },
     async createWorkoutPlan(userId, input) {
       if (repo.simulateDbError) {
         throw new Error('Không thể lưu lịch tập tuần vào hệ thống. Vui lòng thử lại sau.');
       }
-      const record = {
-        id: nextPlanId++,
-        userId,
-        ...input,
-        completedDays: [],
-        createdAt: new Date().toISOString(),
-      };
-      plansById.set(record.id, record);
-      return record;
+      return base.createWorkoutPlan(userId, input);
     },
     async getWorkoutPlanById(userId, planId) {
-      const plan = plansById.get(planId);
-      if (!plan || plan.userId !== userId) return null;
-      return plan;
+      return base.getWorkoutPlanById(userId, planId);
     },
     async toggleWorkoutDayCompletion(userId, planId, dayIndex) {
-      const plan = plansById.get(planId);
-      if (!plan || plan.userId !== userId) return null;
-      const current: number[] = plan.completedDays ?? [];
-      const next = current.includes(dayIndex)
-        ? current.filter((d) => d !== dayIndex)
-        : [...current, dayIndex].sort((a, b) => a - b);
-      plan.completedDays = next;
-      return { ...plan };
+      return base.toggleWorkoutDayCompletion(userId, planId, dayIndex);
     },
   };
-
   return repo;
 }
 
 async function startTestServer(options?: {
-  strategyMode?: 'ok' | 'ai_error' | 'invalid_plan';
+  strategyMode?: 'ok' | 'mock_engine' | 'ai_error' | 'invalid_plan';
 }) {
-  const repo = createInMemoryRepo();
+  const repo = createFaultInjectableRepo();
   const mode = options?.strategyMode ?? 'ok';
+  const capturedStrategyProfiles: StrategyProfileInput[] = [];
 
   const app = createApp({
     repo,
@@ -139,7 +106,11 @@ async function startTestServer(options?: {
       }
       throw new Error('Invalid token');
     },
-    generateStrategy: async (profile) => {
+    generateStrategy: async (profile, goal) => {
+      capturedStrategyProfiles.push(profile);
+      if (mode === 'mock_engine') {
+        return generateWeekOneStrategy(profile, goal, { provider: 'mock' });
+      }
       if (mode === 'ai_error') {
         throw new Error('Không thể tạo lịch tập bằng AI lúc này: Upstream timeout');
       }
@@ -149,12 +120,14 @@ async function startTestServer(options?: {
         ]);
       }
       return {
-        cautiousMode: profile.age > 60 || profile.age < 16 || profile.healthLimitations.length > 0,
+        cautiousMode: profile.age > 60 || profile.age < 18 || profile.healthLimitations.length > 0,
         cautionReasons: profile.age > 60 ? ['Độ tuổi trên 60'] : [],
         safetyAlert: 'Tuân thủ khởi động kỹ và dừng ngay nếu đau nhói khớp.',
         strategySummary: 'Chiến lược Tuần 1 xây nền kỷ luật.',
         coachPrinciples: ['Đều đặn 3 buổi', 'Ngủ đủ giấc', 'Thở đúng nhịp'],
-        schedule: makeSchedule(profile.daysPerWeek, profile.age > 60),
+        schedule: makeSchedule(profile.daysPerWeek, profile.age > 60 || profile.age < 18),
+        aiProvider: 'mock',
+        isSimulated: true,
       };
     },
   });
@@ -167,6 +140,7 @@ async function startTestServer(options?: {
   return {
     baseUrl,
     repo,
+    capturedStrategyProfiles,
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
   };
 }
@@ -198,8 +172,8 @@ test('unauthenticated and invalid token requests are rejected with 401', async (
   }
 });
 
-test('full M01 -> M02 -> M03 -> check-in -> reload flow and cross-user isolation', async () => {
-  const srv = await startTestServer({ strategyMode: 'ok' });
+test('DEV end-to-end M01 -> M02 -> M03 (Mock AI + Safety Validator) -> check-in -> reload and cross-user isolation', async () => {
+  const srv = await startTestServer({ strategyMode: 'mock_engine' });
   try {
     const headersA = {
       'Content-Type': 'application/json',
@@ -210,12 +184,12 @@ test('full M01 -> M02 -> M03 -> check-in -> reload flow and cross-user isolation
       Authorization: 'Bearer token-user-b',
     };
 
-    // 1. User A saves profile
+    // 1. User A saves profile (synthetic DEV fixture — no real customer data)
     const profRes = await fetch(`${srv.baseUrl}/api/profile`, {
       method: 'PUT',
       headers: headersA,
       body: JSON.stringify({
-        fullName: 'Nguyễn Văn An',
+        fullName: 'Dev Synthetic User A',
         age: 64,
         weightKg: 68,
         heightCm: 168,
@@ -250,18 +224,33 @@ test('full M01 -> M02 -> M03 -> check-in -> reload flow and cross-user isolation
     });
     assert.equal(noConsentRes.status, 400);
 
-    // 4. Generate Week 1 plan with aiConsent: true
+    // 4. Generate Week 1 plan via real Mock AI + Strategy Validator
     const genRes = await fetch(`${srv.baseUrl}/api/plans/generate`, {
       method: 'POST',
       headers: headersA,
       body: JSON.stringify({ aiConsent: true }),
     });
     assert.equal(genRes.status, 201);
-    const genData = (await genRes.json()) as { plan: { id: number; cautiousMode: boolean } };
+    const genData = (await genRes.json()) as {
+      plan: {
+        id: number;
+        cautiousMode: boolean;
+        aiProvider: string;
+        isSimulated: boolean;
+        scheduleJson: WorkoutDay[];
+      };
+    };
     assert.equal(genData.plan.cautiousMode, true);
+    assert.equal(genData.plan.aiProvider, 'mock');
+    assert.equal(genData.plan.isSimulated, true);
+    assert.equal(genData.plan.scheduleJson.length, 7);
     const planId = genData.plan.id;
 
-    // 5. Toggle Day 1 completion
+    // Confirm fullName was NEVER passed into generateStrategy
+    assert.equal(srv.capturedStrategyProfiles.length, 1);
+    assert.equal(srv.capturedStrategyProfiles[0].fullName, undefined);
+
+    // 5. Toggle Day 1 check-in
     const toggleRes = await fetch(`${srv.baseUrl}/api/plans/${planId}/days/1/toggle`, {
       method: 'PATCH',
       headers: headersA,
@@ -278,7 +267,7 @@ test('full M01 -> M02 -> M03 -> check-in -> reload flow and cross-user isolation
       goal: { durationWeeks: number };
       latestPlan: { id: number; completedDays: number[] };
     };
-    assert.equal(bootAData.profile.fullName, 'Nguyễn Văn An');
+    assert.equal(bootAData.profile.fullName, 'Dev Synthetic User A');
     assert.equal(bootAData.goal.durationWeeks, 8);
     assert.equal(bootAData.latestPlan.id, planId);
     assert.deepEqual(bootAData.latestPlan.completedDays, [1]);
@@ -303,6 +292,101 @@ test('full M01 -> M02 -> M03 -> check-in -> reload flow and cross-user isolation
       headers: headersB,
     });
     assert.equal(togglePlanB.status, 404);
+  } finally {
+    await srv.close();
+  }
+});
+
+test('enforces guardianConsent for minors (<18) and medicalClearanceAcknowledged for clinical risk profiles', async () => {
+  const srv = await startTestServer({ strategyMode: 'mock_engine' });
+  try {
+    const headersA = {
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer token-user-a',
+    };
+
+    const minorProfile = {
+      fullName: 'Dev Minor Fixture',
+      age: 16,
+      weightKg: 58,
+      heightCm: 166,
+      fitnessLevel: 'beginner',
+      daysPerWeek: 3,
+      equipment: 'none',
+      healthLimitations: [],
+      healthNotes: '',
+    };
+    const defaultGoal = {
+      sport: 'home_workout',
+      goalType: 'endurance',
+      durationWeeks: 6,
+    };
+
+    // Minor without guardianConsent -> 400
+    const minorDenied = await fetch(`${srv.baseUrl}/api/plans/generate`, {
+      method: 'POST',
+      headers: headersA,
+      body: JSON.stringify({
+        aiConsent: true,
+        profile: minorProfile,
+        goal: defaultGoal,
+      }),
+    });
+    assert.equal(minorDenied.status, 400);
+    const minorDeniedBody = (await minorDenied.json()) as { error: string };
+    assert.match(minorDeniedBody.error, /phụ huynh|giám hộ/i);
+
+    // Minor with guardianConsent -> 201 and fullName stripped
+    const minorAllowed = await fetch(`${srv.baseUrl}/api/plans/generate`, {
+      method: 'POST',
+      headers: headersA,
+      body: JSON.stringify({
+        aiConsent: true,
+        guardianConsent: true,
+        profile: minorProfile,
+        goal: defaultGoal,
+      }),
+    });
+    assert.equal(minorAllowed.status, 201);
+    assert.equal(srv.capturedStrategyProfiles[0].fullName, undefined);
+
+    // Medical clearance profile without acknowledgment -> 400
+    const cardioProfile = {
+      fullName: 'Dev Cardio Fixture',
+      age: 48,
+      weightKg: 74,
+      heightCm: 170,
+      fitnessLevel: 'beginner',
+      daysPerWeek: 3,
+      equipment: 'none',
+      healthLimitations: ['Tim mạch / Huyết áp'],
+      healthNotes: '',
+    };
+    const medDenied = await fetch(`${srv.baseUrl}/api/plans/generate`, {
+      method: 'POST',
+      headers: headersA,
+      body: JSON.stringify({
+        aiConsent: true,
+        profile: cardioProfile,
+        goal: defaultGoal,
+      }),
+    });
+    assert.equal(medDenied.status, 400);
+    const medDeniedBody = (await medDenied.json()) as { error: string };
+    assert.match(medDeniedBody.error, /bác sĩ|chuyên môn/i);
+
+    // Medical clearance profile with acknowledgment -> 201
+    const medAllowed = await fetch(`${srv.baseUrl}/api/plans/generate`, {
+      method: 'POST',
+      headers: headersA,
+      body: JSON.stringify({
+        aiConsent: true,
+        medicalClearanceAcknowledged: true,
+        profile: cardioProfile,
+        goal: defaultGoal,
+      }),
+    });
+    assert.equal(medAllowed.status, 201);
   } finally {
     await srv.close();
   }
@@ -451,5 +535,61 @@ test('AI upstream failure returns clean 500 error', async () => {
     assert.match(body.error, /Không thể tạo lịch tập/);
   } finally {
     await aiErrSrv.close();
+  }
+});
+
+test('stateless POST /api/plans/generate works when profile and goal are supplied without SQL access', async () => {
+  const srv = await startTestServer({ strategyMode: 'ok' });
+  try {
+    srv.repo.simulateDbError = true;
+    const headersA = {
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer token-user-a',
+    };
+
+    const okRes = await fetch(`${srv.baseUrl}/api/plans/generate`, {
+      method: 'POST',
+      headers: headersA,
+      body: JSON.stringify({
+        aiConsent: true,
+        profile: {
+          fullName: 'Dev Stateless Fixture',
+          age: 28,
+          weightKg: 62,
+          heightCm: 168,
+          fitnessLevel: 'beginner',
+          daysPerWeek: 3,
+          equipment: 'home',
+          healthLimitations: [],
+          healthNotes: '',
+        },
+        goal: {
+          sport: 'home_workout',
+          goalType: 'endurance',
+          durationWeeks: 8,
+        },
+      }),
+    });
+    assert.equal(okRes.status, 201);
+    const okData = (await okRes.json()) as {
+      plan: { weekNumber: number; scheduleJson: unknown[]; aiProvider: string; isSimulated: boolean };
+    };
+    assert.equal(okData.plan.weekNumber, 1);
+    assert.equal(okData.plan.scheduleJson.length, 7);
+    assert.equal(okData.plan.aiProvider, 'mock');
+    assert.equal(okData.plan.isSimulated, true);
+
+    const badRes = await fetch(`${srv.baseUrl}/api/plans/generate`, {
+      method: 'POST',
+      headers: headersA,
+      body: JSON.stringify({
+        aiConsent: true,
+        profile: { fullName: '', age: 5 },
+        goal: { sport: 'running', goalType: 'endurance', durationWeeks: 8 },
+      }),
+    });
+    assert.equal(badRes.status, 400);
+  } finally {
+    await srv.close();
   }
 });

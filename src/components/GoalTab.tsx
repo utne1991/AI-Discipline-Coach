@@ -1,22 +1,28 @@
-import { Check, Sparkles, AlertCircle } from 'lucide-react';
+import { Check, Sparkles, AlertCircle, ShieldAlert } from 'lucide-react';
 import {
+  CONSENT_POLICY_VERSION,
   GOAL_LABELS,
   SPORT_LABELS,
+  evaluateSafetyProfile,
+  type ConsentRecord,
   type GoalData,
   type GoalType,
+  type ProfileData,
   type SportOption,
 } from '../shared/types.ts';
 
 interface GoalTabProps {
   form: GoalData;
+  profile: ProfileData | null;
   onChange: (next: GoalData) => void;
   onSaveGoal: () => Promise<void>;
   onSaveAndGeneratePlan: () => Promise<void>;
   isSavingGoal: boolean;
   isGeneratingPlan: boolean;
   hasProfileSaved: boolean;
-  aiConsent: boolean;
-  onToggleAiConsent: (checked: boolean) => void;
+  consent: ConsentRecord;
+  isSavingConsent: boolean;
+  onUpdateConsent: (patch: Partial<ConsentRecord>) => Promise<void>;
   onGoToProfile: () => void;
   hasUnsavedChanges: boolean;
   lastSavedAt?: string;
@@ -26,18 +32,40 @@ const DURATION_PRESETS = [4, 6, 8, 12];
 
 export function GoalTab({
   form,
+  profile,
   onChange,
   onSaveGoal,
   onSaveAndGeneratePlan,
   isSavingGoal,
   isGeneratingPlan,
   hasProfileSaved,
-  aiConsent,
-  onToggleAiConsent,
+  consent,
+  isSavingConsent,
+  onUpdateConsent,
   onGoToProfile,
   hasUnsavedChanges,
   lastSavedAt,
 }: GoalTabProps) {
+  const safetyProfile = profile
+    ? evaluateSafetyProfile({
+        age: profile.age,
+        weightKg: profile.weightKg,
+        heightCm: profile.heightCm,
+        fitnessLevel: profile.fitnessLevel,
+        daysPerWeek: profile.daysPerWeek,
+        healthLimitations: profile.healthLimitations,
+        healthNotes: profile.healthNotes,
+      })
+    : null;
+
+  const requiresGuardian = Boolean(safetyProfile?.isMinor);
+  const requiresMedical = Boolean(safetyProfile?.requiresMedicalClearance);
+
+  const allRequiredConsentsMet =
+    consent.aiHealthDataConsent &&
+    (!requiresGuardian || consent.guardianConsentConfirmed) &&
+    (!requiresMedical || consent.medicalClearanceAcknowledged);
+
   return (
     <div className="space-y-5">
       {!hasProfileSaved && (
@@ -184,18 +212,81 @@ export function GoalTab({
           </div>
         </div>
 
-        <div className="mt-6 pt-5 border-t border-slate-100">
+        <div className="mt-6 pt-5 border-t border-slate-100 space-y-3.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="text-sm font-semibold text-slate-900">
+                Quản lý sự đồng ý & Tối giản dữ liệu AI
+              </h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Họ tên và email không bao giờ được gửi sang AI. Hệ thống chỉ gửi nhóm tuổi, chỉ số thể chất cơ bản và nhóm giới hạn sức khỏe đã tối giản (phiên bản {consent.policyVersion || CONSENT_POLICY_VERSION}).
+              </p>
+            </div>
+            {isSavingConsent && (
+              <span className="text-xs text-slate-500 whitespace-nowrap">Đang lưu...</span>
+            )}
+          </div>
+
           <label className="flex items-start gap-3 cursor-pointer select-none">
             <input
               type="checkbox"
-              checked={aiConsent}
-              onChange={(e) => onToggleAiConsent(e.target.checked)}
+              checked={consent.aiHealthDataConsent}
+              disabled={isSavingConsent}
+              onChange={(e) => {
+                void onUpdateConsent({ aiHealthDataConsent: e.target.checked });
+              }}
               className="mt-1 h-5 w-5 rounded border-slate-300 accent-teal-700 shrink-0 cursor-pointer"
             />
-            <span className="text-xs text-slate-600 leading-relaxed">
-              Tôi đồng ý chia sẻ thông tin thể chất và giới hạn sức khỏe đã nhập cho hệ thống AI (Gemini) để phân tích và đề xuất lịch tập Tuần 1. Dữ liệu chỉ dùng cho mục đích lập kế hoạch và lưu trong tài khoản của tôi.
+            <span className="text-xs text-slate-700 leading-relaxed">
+              Tôi đồng ý chia sẻ thông tin thể chất và nhóm giới hạn sức khỏe đã tối giản (không bao gồm họ tên) để hệ thống AI lập lịch tập Tuần 1. Tôi có thể bỏ chọn bất kỳ lúc nào để rút lại sự đồng ý.
             </span>
           </label>
+
+          {requiresGuardian && (
+            <div className="rounded-xl border border-amber-300 bg-amber-50/80 p-3.5 space-y-2">
+              <div className="flex items-start gap-2 text-xs font-semibold text-amber-950">
+                <ShieldAlert className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+                <span>Quy tắc an toàn dành cho người chưa thành niên (&lt; 18 tuổi)</span>
+              </div>
+              <label className="flex items-start gap-3 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={consent.guardianConsentConfirmed}
+                  disabled={isSavingConsent}
+                  onChange={(e) => {
+                    void onUpdateConsent({ guardianConsentConfirmed: e.target.checked });
+                  }}
+                  className="mt-0.5 h-5 w-5 rounded border-amber-400 accent-teal-700 shrink-0 cursor-pointer"
+                />
+                <span className="text-xs text-amber-950 leading-relaxed">
+                  Tôi xác nhận đã có sự đồng ý và giám sát của phụ huynh hoặc người giám hộ hợp pháp trước khi sử dụng lịch tập.
+                </span>
+              </label>
+            </div>
+          )}
+
+          {requiresMedical && (
+            <div className="rounded-xl border border-rose-300 bg-rose-50/80 p-3.5 space-y-2">
+              <div className="flex items-start gap-2 text-xs font-semibold text-rose-950">
+                <ShieldAlert className="w-4 h-4 text-rose-700 shrink-0 mt-0.5" />
+                <span>Khuyến nghị đánh giá sức khỏe chuyên môn</span>
+              </div>
+              <label className="flex items-start gap-3 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={consent.medicalClearanceAcknowledged}
+                  disabled={isSavingConsent}
+                  onChange={(e) => {
+                    void onUpdateConsent({ medicalClearanceAcknowledged: e.target.checked });
+                  }}
+                  className="mt-0.5 h-5 w-5 rounded border-rose-400 accent-teal-700 shrink-0 cursor-pointer"
+                />
+                <span className="text-xs text-rose-950 leading-relaxed">
+                  Tôi hiểu hồ sơ có yếu tố sức khỏe cần thận trọng đặc biệt, AI không thay thế bác sĩ, và tôi cần tham khảo ý kiến bác sĩ / chuyên gia y tế trước khi tập luyện.
+                </span>
+              </label>
+            </div>
+          )}
         </div>
       </section>
 
@@ -212,7 +303,7 @@ export function GoalTab({
         <button
           type="button"
           onClick={onSaveAndGeneratePlan}
-          disabled={isSavingGoal || isGeneratingPlan || !hasProfileSaved || !aiConsent}
+          disabled={isSavingGoal || isGeneratingPlan || !hasProfileSaved || !allRequiredConsentsMet}
           className="sm:w-2/3 min-h-[48px] rounded-xl bg-teal-700 hover:bg-teal-800 active:scale-[0.99] text-white font-semibold text-sm px-5 py-3 flex items-center justify-center gap-2 transition-all disabled:opacity-60 cursor-pointer"
         >
           <Sparkles className="w-4 h-4 shrink-0" />

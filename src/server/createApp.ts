@@ -1,17 +1,7 @@
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { adminAuth } from '../lib/firebase-admin.ts';
-import {
-  createWorkoutPlan,
-  getOrCreateUser,
-  getUserBootstrapData,
-  getWorkoutPlanById,
-  toggleWorkoutDayCompletion,
-  upsertUserGoal,
-  upsertUserProfile,
-  type CreateWorkoutPlanInput,
-  type UpsertGoalInput,
-  type UpsertProfileInput,
-} from '../db/repository.ts';
+import { postgresRepository } from '../repositories/postgresRepository.ts';
+import type { AppRepository } from '../repositories/types.ts';
 import {
   StrategyValidationError,
   generateWeekOneStrategy,
@@ -19,7 +9,15 @@ import {
   type StrategyGoalInput,
   type StrategyProfileInput,
 } from '../services/aiStrategy.ts';
-import type { EquipmentOption, FitnessLevel, GoalType, SportOption } from '../shared/types.ts';
+import {
+  evaluateSafetyProfile,
+  type EquipmentOption,
+  type FitnessLevel,
+  type GoalType,
+  type SportOption,
+} from '../shared/types.ts';
+
+export type { AppRepository };
 
 export interface VerifiedAuthUser {
   uid: string;
@@ -29,29 +27,6 @@ export interface VerifiedAuthUser {
 
 export interface AuthenticatedRequest extends Request {
   authUser?: VerifiedAuthUser;
-}
-
-export interface AppRepository {
-  getOrCreateUser: (
-    uid: string,
-    email: string,
-    displayName: string
-  ) => Promise<{ id: number; uid: string; email: string; displayName: string }>;
-  getUserBootstrapData: (userId: number) => Promise<{
-    profile: any;
-    goal: any;
-    latestPlan: any;
-    planCount: number;
-  }>;
-  upsertUserProfile: (userId: number, input: UpsertProfileInput) => Promise<any>;
-  upsertUserGoal: (userId: number, input: UpsertGoalInput) => Promise<any>;
-  createWorkoutPlan: (userId: number, input: CreateWorkoutPlanInput) => Promise<any>;
-  getWorkoutPlanById: (userId: number, planId: number) => Promise<any>;
-  toggleWorkoutDayCompletion: (
-    userId: number,
-    planId: number,
-    dayIndex: number
-  ) => Promise<any>;
 }
 
 export interface CreateAppDependencies {
@@ -162,15 +137,7 @@ export function createApp(deps: CreateAppDependencies = {}) {
       };
     });
 
-  const repo: AppRepository = deps.repo ?? {
-    getOrCreateUser,
-    getUserBootstrapData,
-    upsertUserProfile,
-    upsertUserGoal,
-    createWorkoutPlan,
-    getWorkoutPlanById,
-    toggleWorkoutDayCompletion,
-  };
+  const repo: AppRepository = deps.repo ?? postgresRepository;
 
   const runStrategyGenerator = deps.generateStrategy ?? generateWeekOneStrategy;
 
@@ -278,7 +245,72 @@ export function createApp(deps: CreateAppDependencies = {}) {
       if (body.aiConsent !== true) {
         return res.status(400).json({
           error:
-            'Vui lòng xác nhận đồng ý gửi thông tin thể chất và giới hạn sức khỏe cho AI trước khi tạo lịch tập.',
+            'Vui lòng xác nhận đồng ý gửi thông tin thể chất và giới hạn sức khỏe đã tối giản cho AI trước khi tạo lịch tập.',
+        });
+      }
+
+      const validateSafetyConsents = (profile: {
+        age: number;
+        weightKg: number;
+        heightCm: number;
+        fitnessLevel: FitnessLevel;
+        healthLimitations: string[];
+        healthNotes: string;
+      }): string | null => {
+        const safety = evaluateSafetyProfile({
+          age: profile.age,
+          weightKg: profile.weightKg,
+          heightCm: profile.heightCm,
+          fitnessLevel: profile.fitnessLevel,
+          healthLimitations: profile.healthLimitations,
+          healthNotes: profile.healthNotes,
+        });
+        if (safety.isMinor && body.guardianConsent !== true) {
+          return 'Người dùng dưới 18 tuổi bắt buộc có xác nhận đồng ý và giám sát của phụ huynh / người giám hộ trước khi tạo lịch tập.';
+        }
+        if (safety.requiresMedicalClearance && body.medicalClearanceAcknowledged !== true) {
+          return 'Hồ sơ có yếu tố sức khỏe cần đánh giá chuyên môn. Vui lòng xác nhận đã nắm khuyến nghị tham khảo ý kiến bác sĩ trước khi tập luyện.';
+        }
+        return null;
+      };
+
+      if (body.profile && body.goal && typeof body.profile === 'object' && typeof body.goal === 'object') {
+        const validatedProfile = validateProfilePayload(body.profile as Record<string, unknown>);
+        if ('error' in validatedProfile) {
+          return res.status(400).json({ error: validatedProfile.error });
+        }
+        const validatedGoal = validateGoalPayload(body.goal as Record<string, unknown>);
+        if ('error' in validatedGoal) {
+          return res.status(400).json({ error: validatedGoal.error });
+        }
+
+        const consentError = validateSafetyConsents(validatedProfile.data);
+        if (consentError) {
+          return res.status(400).json({ error: consentError });
+        }
+
+        // Data minimization: omit fullName before invoking AI strategy generator
+        const { fullName: _omittedName, ...minimizedProfile } = validatedProfile.data;
+        const generated = await runStrategyGenerator(minimizedProfile, validatedGoal.data);
+
+        return res.status(201).json({
+          plan: {
+            id: Date.now(),
+            weekNumber: 1,
+            sport: validatedGoal.data.sport,
+            goalType: validatedGoal.data.goalType,
+            durationWeeks: validatedGoal.data.durationWeeks,
+            cautiousMode: generated.cautiousMode,
+            cautionReasons: generated.cautionReasons,
+            safetyAlert: generated.safetyAlert,
+            strategySummary: generated.strategySummary,
+            coachPrinciples: generated.coachPrinciples,
+            scheduleJson: generated.schedule,
+            completedDays: [],
+            aiProvider: generated.aiProvider,
+            isSimulated: generated.isSimulated,
+            createdAt: new Date().toISOString(),
+          },
         });
       }
 
@@ -296,26 +328,29 @@ export function createApp(deps: CreateAppDependencies = {}) {
         });
       }
 
-      const generated = await runStrategyGenerator(
-        {
-          fullName: state.profile.fullName,
-          age: state.profile.age,
-          weightKg: state.profile.weightKg,
-          heightCm: state.profile.heightCm,
-          fitnessLevel: state.profile.fitnessLevel as FitnessLevel,
-          daysPerWeek: state.profile.daysPerWeek,
-          equipment: state.profile.equipment as EquipmentOption,
-          healthLimitations: Array.isArray(state.profile.healthLimitations)
-            ? state.profile.healthLimitations
-            : [],
-          healthNotes: state.profile.healthNotes ?? '',
-        },
-        {
-          sport: state.goal.sport as SportOption,
-          goalType: state.goal.goalType as GoalType,
-          durationWeeks: state.goal.durationWeeks,
-        }
-      );
+      const persistedProfileForAi: StrategyProfileInput = {
+        age: state.profile.age,
+        weightKg: state.profile.weightKg,
+        heightCm: state.profile.heightCm,
+        fitnessLevel: state.profile.fitnessLevel as FitnessLevel,
+        daysPerWeek: state.profile.daysPerWeek,
+        equipment: state.profile.equipment as EquipmentOption,
+        healthLimitations: Array.isArray(state.profile.healthLimitations)
+          ? state.profile.healthLimitations
+          : [],
+        healthNotes: state.profile.healthNotes ?? '',
+      };
+
+      const consentError = validateSafetyConsents(persistedProfileForAi);
+      if (consentError) {
+        return res.status(400).json({ error: consentError });
+      }
+
+      const generated = await runStrategyGenerator(persistedProfileForAi, {
+        sport: state.goal.sport as SportOption,
+        goalType: state.goal.goalType as GoalType,
+        durationWeeks: state.goal.durationWeeks,
+      });
 
       const savedPlan = await repo.createWorkoutPlan(user.id, {
         weekNumber: 1,
@@ -330,7 +365,13 @@ export function createApp(deps: CreateAppDependencies = {}) {
         scheduleJson: generated.schedule,
       });
 
-      return res.status(201).json({ plan: savedPlan });
+      return res.status(201).json({
+        plan: {
+          ...savedPlan,
+          aiProvider: generated.aiProvider,
+          isSimulated: generated.isSimulated,
+        },
+      });
     } catch (error) {
       if (error instanceof StrategyValidationError) {
         return res.status(422).json({

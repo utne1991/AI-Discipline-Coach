@@ -1,0 +1,60 @@
+name: CI Quality Gate
+
+on:
+  push:
+    branches:
+      - main
+      - 'fix/**'
+      - 'feat/**'
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality-gate:
+    name: Lint, Rules, Secret Scan, Test & Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.4'
+
+      - name: Install dependencies (frozen lockfile)
+        run: bun install --frozen-lockfile
+
+      - name: Secret hygiene check
+        run: |
+          if grep -rnE "BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|service_account|AIza[0-9A-Za-z_-]{35}" src server.ts tests .github docs --exclude-dir=node_modules --exclude-dir=dist; then
+            echo "ERROR: Potential secret detected in source/docs."
+            exit 1
+          fi
+          echo "Secret hygiene check passed."
+
+      - name: TypeScript typecheck
+        run: bun run lint
+
+      - name: Firestore security rules lint
+        run: bun run lint:rules
+
+      - name: Automated unit & integration tests
+        run: bun run test
+
+      - name: Production Vite build
+        run: bun run build
