@@ -8,6 +8,7 @@ import {
   ShieldCheck,
   Sparkles,
 } from 'lucide-react';
+import { ProgressBar } from './ProgressBar.tsx';
 import {
   GOAL_LABELS,
   SPORT_LABELS,
@@ -109,10 +110,18 @@ export function PlanTab({
   const days: WorkoutDay[] = Array.isArray(plan.scheduleJson) ? plan.scheduleJson : [];
   const activeDay = days.find((d) => d.dayIndex === selectedDayIndex) ?? days[0];
   const completedDays = Array.isArray(plan.completedDays) ? plan.completedDays : [];
-  const workoutDaysCount = days.filter((d) => !d.isRestDay).length;
-  const completedWorkoutsCount = days.filter(
-    (d) => !d.isRestDay && completedDays.includes(d.dayIndex)
+  const workoutDays = days.filter((d) => !d.isRestDay);
+  const workoutDaysCount = workoutDays.length;
+  const completedWorkoutsCount = workoutDays.filter((d) =>
+    completedDays.includes(d.dayIndex)
   ).length;
+  const totalExercisesCount = workoutDays.reduce(
+    (sum, day) => sum + (Array.isArray(day.exercises) ? day.exercises.length : 0),
+    0
+  );
+  const completedExercisesCount = workoutDays
+    .filter((d) => completedDays.includes(d.dayIndex))
+    .reduce((sum, day) => sum + (Array.isArray(day.exercises) ? day.exercises.length : 0), 0);
 
   return (
     <div className="space-y-4">
@@ -185,6 +194,13 @@ export function PlanTab({
         </div>
 
         <p className="mt-4 text-sm text-slate-700 leading-relaxed">{plan.strategySummary}</p>
+
+        <ProgressBar
+          completedExercises={completedExercisesCount}
+          totalExercises={totalExercisesCount}
+          completedSessions={completedWorkoutsCount}
+          totalSessions={workoutDaysCount}
+        />
 
         {Array.isArray(plan.coachPrinciples) && plan.coachPrinciples.length > 0 && (
           <ul className="mt-4 pt-3 border-t border-slate-100 space-y-1.5 text-xs text-slate-600">
