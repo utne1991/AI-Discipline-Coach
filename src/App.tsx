@@ -69,6 +69,7 @@ export default function App() {
   const [goalForm, setGoalForm] = useState<GoalData>(DEFAULT_GOAL);
 
   const [latestPlan, setLatestPlan] = useState<WorkoutPlanData | null>(null);
+  const [aiConsent, setAiConsent] = useState(false);
 
   const [isSavingProfile, setIsSavingProfile] = useState(false);
   const [isSavingGoal, setIsSavingGoal] = useState(false);
@@ -154,6 +155,8 @@ export default function App() {
         setSavedProfile(null);
         setSavedGoal(null);
         setLatestPlan(null);
+        setAiConsent(false);
+        setActiveTab('profile');
       }
     });
     return () => unsubscribe();
@@ -178,6 +181,8 @@ export default function App() {
   const handleSignOut = async () => {
     await signOut(auth);
     setFeedback(null);
+    setAiConsent(false);
+    setActiveTab('profile');
   };
 
   const hasUnsavedProfile = useMemo(() => {
@@ -259,6 +264,14 @@ export default function App() {
 
   const handleGeneratePlan = async () => {
     if (!firebaseUser) return;
+    if (!aiConsent) {
+      setFeedback({
+        type: 'error',
+        message: 'Vui lòng đánh dấu đồng ý chia sẻ thông tin sức khỏe cho AI ở tab Mục tiêu.',
+      });
+      setActiveTab('goal');
+      return;
+    }
     setIsGeneratingPlan(true);
     setFeedback(null);
     try {
@@ -272,6 +285,7 @@ export default function App() {
       }
       const res = await apiFetch<{ plan: WorkoutPlanData }>('/api/plans/generate', firebaseUser, {
         method: 'POST',
+        body: JSON.stringify({ aiConsent: true }),
       });
       setLatestPlan(res.plan);
       setActiveTab('plan');
@@ -439,6 +453,8 @@ export default function App() {
                 isSavingGoal={isSavingGoal}
                 isGeneratingPlan={isGeneratingPlan}
                 hasProfileSaved={Boolean(savedProfile)}
+                aiConsent={aiConsent}
+                onToggleAiConsent={setAiConsent}
                 onGoToProfile={() => setActiveTab('profile')}
                 hasUnsavedChanges={hasUnsavedGoal}
                 lastSavedAt={savedGoal?.updatedAt}
@@ -452,6 +468,7 @@ export default function App() {
                 goal={savedGoal}
                 isGenerating={isGeneratingPlan}
                 togglingDayIndex={togglingDayIndex}
+                aiConsent={aiConsent}
                 onGeneratePlan={handleGeneratePlan}
                 onToggleDayComplete={handleToggleDayComplete}
                 onGoToProfile={() => setActiveTab('profile')}

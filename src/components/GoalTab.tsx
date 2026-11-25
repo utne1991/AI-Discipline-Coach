@@ -15,6 +15,8 @@ interface GoalTabProps {
   isSavingGoal: boolean;
   isGeneratingPlan: boolean;
   hasProfileSaved: boolean;
+  aiConsent: boolean;
+  onToggleAiConsent: (checked: boolean) => void;
   onGoToProfile: () => void;
   hasUnsavedChanges: boolean;
   lastSavedAt?: string;
@@ -30,6 +32,8 @@ export function GoalTab({
   isSavingGoal,
   isGeneratingPlan,
   hasProfileSaved,
+  aiConsent,
+  onToggleAiConsent,
   onGoToProfile,
   hasUnsavedChanges,
   lastSavedAt,
@@ -179,6 +183,20 @@ export function GoalTab({
             })}
           </div>
         </div>
+
+        <div className="mt-6 pt-5 border-t border-slate-100">
+          <label className="flex items-start gap-3 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={aiConsent}
+              onChange={(e) => onToggleAiConsent(e.target.checked)}
+              className="mt-1 h-5 w-5 rounded border-slate-300 accent-teal-700 shrink-0 cursor-pointer"
+            />
+            <span className="text-xs text-slate-600 leading-relaxed">
+              Tôi đồng ý chia sẻ thông tin thể chất và giới hạn sức khỏe đã nhập cho hệ thống AI (Gemini) để phân tích và đề xuất lịch tập Tuần 1. Dữ liệu chỉ dùng cho mục đích lập kế hoạch và lưu trong tài khoản của tôi.
+            </span>
+          </label>
+        </div>
       </section>
 
       <div className="flex flex-col sm:flex-row gap-2.5">
@@ -194,7 +212,7 @@ export function GoalTab({
         <button
           type="button"
           onClick={onSaveAndGeneratePlan}
-          disabled={isSavingGoal || isGeneratingPlan || !hasProfileSaved}
+          disabled={isSavingGoal || isGeneratingPlan || !hasProfileSaved || !aiConsent}
           className="sm:w-2/3 min-h-[48px] rounded-xl bg-teal-700 hover:bg-teal-800 active:scale-[0.99] text-white font-semibold text-sm px-5 py-3 flex items-center justify-center gap-2 transition-all disabled:opacity-60 cursor-pointer"
         >
           <Sparkles className="w-4 h-4 shrink-0" />

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   CheckCircle2,
   Circle,
@@ -23,6 +23,7 @@ interface PlanTabProps {
   goal: GoalData | null;
   isGenerating: boolean;
   togglingDayIndex: number | null;
+  aiConsent: boolean;
   onGeneratePlan: () => Promise<void>;
   onToggleDayComplete: (planId: number, dayIndex: number) => Promise<void>;
   onGoToProfile: () => void;
@@ -37,6 +38,7 @@ export function PlanTab({
   goal,
   isGenerating,
   togglingDayIndex,
+  aiConsent,
   onGeneratePlan,
   onToggleDayComplete,
   onGoToProfile,
@@ -44,8 +46,12 @@ export function PlanTab({
 }: PlanTabProps) {
   const [selectedDayIndex, setSelectedDayIndex] = useState<number>(1);
 
+  useEffect(() => {
+    setSelectedDayIndex(1);
+  }, [plan?.id]);
+
   if (!plan) {
-    const canGenerate = Boolean(profile && goal);
+    const canGenerate = Boolean(profile && goal && aiConsent);
     return (
       <div className="bg-white rounded-2xl border border-slate-200/90 p-6 sm:p-8 text-center">
         <div className="w-12 h-12 rounded-2xl bg-teal-50 text-teal-700 flex items-center justify-center mx-auto">
@@ -57,7 +63,7 @@ export function PlanTab({
         <p className="mt-2 text-sm text-slate-600 max-w-md mx-auto leading-relaxed">
           {canGenerate
             ? 'Hồ sơ và mục tiêu của bạn đã sẵn sàng. Nhấn nút dưới đây để AI Strategy Engine tạo lịch tập Tuần 1 phù hợp và lưu vào hệ thống.'
-            : 'Hãy lưu Hồ sơ người dùng (M01) và Thiết lập mục tiêu (M02) trước khi AI xây dựng lịch tập Tuần 1.'}
+            : 'Hãy lưu Hồ sơ người dùng (M01), Thiết lập mục tiêu (M02) và xác nhận đồng ý xử lý dữ liệu sức khỏe trước khi AI xây dựng lịch tập Tuần 1.'}
         </p>
 
         <div className="mt-6 flex flex-col sm:flex-row items-center justify-center gap-2.5">
@@ -84,13 +90,13 @@ export function PlanTab({
                   Điền Hồ sơ (M01)
                 </button>
               )}
-              {!goal && (
+              {(!goal || !aiConsent) && (
                 <button
                   type="button"
                   onClick={onGoToGoal}
                   className="w-full sm:w-auto min-h-[44px] px-5 py-2.5 rounded-xl border border-slate-300 bg-white text-slate-900 font-semibold text-sm cursor-pointer"
                 >
-                  Chọn Mục tiêu (M02)
+                  Mở Mục tiêu & Xác nhận (M02)
                 </button>
               )}
             </>
@@ -168,7 +174,7 @@ export function PlanTab({
             </div>
             <button
               type="button"
-              onClick={onGeneratePlan}
+              onClick={aiConsent ? onGeneratePlan : onGoToGoal}
               disabled={isGenerating}
               className="min-h-[40px] px-3.5 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-800 text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors disabled:opacity-60 cursor-pointer"
             >

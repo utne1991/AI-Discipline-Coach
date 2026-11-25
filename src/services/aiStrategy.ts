@@ -4,7 +4,7 @@ import {
   FITNESS_LEVEL_LABELS,
   GOAL_LABELS,
   SPORT_LABELS,
-  calculateBmi,
+  evaluateBmi,
   evaluateCautionStatus,
   type EquipmentOption,
   type FitnessLevel,
@@ -12,15 +12,34 @@ import {
   type SportOption,
   type WorkoutDay,
 } from '../shared/types.ts';
+import { validateWorkoutStrategy } from './strategyValidator.ts';
 
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-  httpOptions: {
-    headers: {
-      'User-Agent': 'aistudio-build',
+function getAiClient(): GoogleGenAI {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error(
+      'Chưa cấu hình khóa Gemini API trên máy chủ. Vui lòng kiểm tra mục Settings > Secrets.'
+    );
+  }
+  return new GoogleGenAI({
+    apiKey,
+    httpOptions: {
+      headers: {
+        'User-Agent': 'aistudio-build',
+      },
     },
-  },
-});
+  });
+}
+
+export class StrategyValidationError extends Error {
+  readonly validationErrors: string[];
+
+  constructor(message: string, validationErrors: string[]) {
+    super(message);
+    this.name = 'StrategyValidationError';
+    this.validationErrors = validationErrors;
+  }
+}
 
 export interface StrategyProfileInput {
   fullName: string;
@@ -48,16 +67,6 @@ export interface GeneratedStrategyResult {
   coachPrinciples: string[];
   schedule: WorkoutDay[];
 }
-
-const DAY_LABELS = [
-  'Thứ 2',
-  'Thứ 3',
-  'Thứ 4',
-  'Thứ 5',
-  'Thứ 6',
-  'Thứ 7',
-  'Chủ nhật',
-];
 
 const RESPONSE_SCHEMA = {
   type: Type.OBJECT,
@@ -126,12 +135,12 @@ const RESPONSE_SCHEMA = {
           exercises: {
             type: Type.ARRAY,
             description:
-              'Danh sách bài tập trong ngày (4-6 bài cho ngày tập; 1-2 hoạt động nhẹ hoặc mảng rỗng cho ngày nghỉ).',
+              'Danh sách bài tập trong ngày (3-6 bài cho ngày tập; 0-2 hoạt động nhẹ cho ngày nghỉ).',
             items: {
               type: Type.OBJECT,
               properties: {
                 name: { type: Type.STRING, description: 'Tên bài tập rõ ràng.' },
-                sets: { type: Type.STRING, description: 'Số hiệp (ví dụ: 3 hiệp hoặc 1 phiên).' },
+                sets: { type: Type.STRING, description: 'Số hiệp (ví dụ: 3 hiệp).' },
                 repsOrDuration: {
                   type: Type.STRING,
                   description: 'Số lần lặp hoặc thời gian (ví dụ: 10–12 lần hoặc 20 phút).',
@@ -168,65 +177,51 @@ const RESPONSE_SCHEMA = {
   required: ['strategySummary', 'safetyAlert', 'coachPrinciples', 'days'],
 };
 
-function normalizeIntensity(
-  raw: string,
-  cautiousMode: boolean,
-  isRestDay: boolean
-): 'Nhẹ' | 'Trung bình' | 'Cao' {
-  if (isRestDay) return 'Nhẹ';
-  if (cautiousMode) {
-    return raw === 'Trung bình' ? 'Trung bình' : 'Nhẹ';
-  }
-  if (raw === 'Cao') return 'Cao';
-  if (raw === 'Trung bình') return 'Trung bình';
-  return 'Nhẹ';
-}
-
 export async function generateWeekOneStrategy(
   profile: StrategyProfileInput,
   goal: StrategyGoalInput
 ): Promise<GeneratedStrategyResult> {
-  if (!process.env.GEMINI_API_KEY) {
-    throw new Error(
-      'Chưa cấu hình khóa Gemini API trên máy chủ. Vui lòng kiểm tra mục Settings > Secrets.'
-    );
-  }
+  const ai = getAiClient();
 
   const { cautiousMode, cautionReasons } = evaluateCautionStatus(
     profile.age,
     profile.healthLimitations,
-    profile.healthNotes
+    profile.healthNotes,
+    profile.weightKg,
+    profile.heightCm
   );
-  const bmi = calculateBmi(profile.weightKg, profile.heightCm);
+  const bmiEval = evaluateBmi(profile.weightKg, profile.heightCm, profile.age);
 
   const systemInstruction = `Bạn là AI Discipline Coach — huấn luyện viên thể chất chuyên nghiệp, khoa học và đề cao an toàn y khoa.
 Nhiệm vụ của bạn: Phân tích hồ sơ người dùng và mục tiêu tập luyện để thiết kế Lịch Tập Tuần 1 (7 ngày từ Thứ 2 đến Chủ nhật) hoàn toàn bằng tiếng Việt tự nhiên, rõ ràng, ngắn gọn, dễ thực hiện trên điện thoại.
 
-QUY TẮC BẮT BUỘC:
-1. Số ngày tập chính (isRestDay = false) PHẢI KHỚP chính xác với số ngày tập/tuần người dùng chọn (${profile.daysPerWeek} ngày tập, ${7 - profile.daysPerWeek} ngày nghỉ/phục hồi). Sắp xếp xen kẽ hợp lý để cơ thể hồi phục.
-2. Tất cả bài tập phải phù hợp tuyệt đối với dụng cụ có sẵn (${EQUIPMENT_LABELS[profile.equipment].label}) và môn chính (${SPORT_LABELS[goal.sport].label}).
-3. Không bao giờ dùng ký tự mã máy móc hay thuật ngữ khó hiểu; trình bày mạch lạc, đo lường cụ thể (số hiệp, số lần hoặc phút/giây nghỉ).
+QUY TẮC BẮT BUỘC (HỆ THỐNG KIỂM ĐỊNH ĐỘC LẬP SẼ TỪ CHỐI NẾU VI PHẠM):
+1. Bắt buộc trả về đúng 7 ngày với dayIndex duy nhất từ 1 (Thứ 2) đến 7 (Chủ nhật).
+2. Số ngày tập chính (isRestDay = false) PHẢI KHỚP chính xác ${profile.daysPerWeek} ngày tập và ${7 - profile.daysPerWeek} ngày nghỉ (isRestDay = true). Ngày nghỉ phải có intensity = "Nhẹ", estimatedMinutes <= 30, tối đa 2 hoạt động giãn cơ nhẹ.
+3. Tất cả bài tập phải phù hợp tuyệt đối với dụng cụ có sẵn (${EQUIPMENT_LABELS[profile.equipment].label}) và môn chính (${SPORT_LABELS[goal.sport].label}).
+4. Không bao giờ dùng ký tự mã máy móc; ghi rõ số hiệp (1–5 hiệp khi thận trọng), số lần/thời gian, thời gian nghỉ (giây) và ghi chú kỹ thuật an toàn cho từng bài.
 ${
   cautiousMode
-    ? `4. CHẾ ĐỘ THẬN TRỌNG BẮT BUỘC ĐANG ĐƯỢC KÍCH HOẠT vì các yếu tố sau:
+    ? `5. CHẾ ĐỘ THẬN TRỌNG BẮT BUỘC ĐANG ĐƯỢC KÍCH HOẠT vì các yếu tố sau:
 ${cautionReasons.map((r) => `   - ${r}`).join('\n')}
    HÀNH ĐỘNG BẮT BUỘC KHI THẬN TRỌNG:
-   - Chỉ chọn bài tập tác động thấp (low-impact), kiểm soát biên độ khớp an toàn, KHÔNG nhảy bật (plyometrics), KHÔNG chạy nước rút tối đa, KHÔNG gánh tạ nặng đè cột sống hoặc khớp đang tổn thương.
-   - Cường độ tối đa ở mức "Nhẹ" (hoặc "Trung bình" rất nhẹ nếu không gây áp lực lên vùng giới hạn; ưu tiên "Nhẹ", tuyệt đối không xếp "Cao"). RPE <= 5-6/10.
-   - Khởi động kỹ 8-10 phút, thời gian nghỉ giữa hiệp >= 60-90 giây.
-   - Trong "safetyAlert": viết cảnh báo an toàn nổi bật, rõ ràng (2-4 câu) nêu rõ chế độ thận trọng đang áp dụng, tránh những chuyển động nào, dấu hiệu cần dừng tập ngay (đau nhói khớp, chóng mặt, tức ngực, khó thở) và khuyên tham khảo ý kiến bác sĩ / chuyên gia vật lý trị liệu trước khi tăng cường độ.
-   - Nếu dưới 16 tuổi: ưu tiên kỹ thuật động tác với trọng lượng cơ thể, phát triển vận động tự nhiên, tránh tạ nặng tối đa và có người lớn giám sát.
+   - Chỉ chọn bài tập tác động thấp (low-impact), kiểm soát biên độ khớp an toàn, KHÔNG nhảy bật (burpee, box jump, jump squat, bật nhảy), KHÔNG chạy nước rút tối đa, KHÔNG gánh tạ nặng đè cột sống hoặc khớp đang tổn thương.
+   - Tuyệt đối KHÔNG dùng cường độ "Cao" ở bất kỳ ngày nào; chỉ dùng "Nhẹ" hoặc "Trung bình". Thời lượng ngày tập <= 60 phút.
+   - Thời gian nghỉ giữa hiệp PHẢI >= 45 giây (khuyến nghị 60–90 giây).
+   - Nếu có <= 4 buổi/tuần, sắp xếp ngày nghỉ xen kẽ, không xếp 3 ngày tập liên tiếp.
+   - Trong "safetyAlert": viết cảnh báo an toàn nổi bật, rõ ràng (>= 30 ký tự) nêu rõ lý do thận trọng, chuyển động cần tránh, dấu hiệu phải dừng tập ngay và khuyên tham khảo ý kiến bác sĩ.
+   - Nếu dưới 16 tuổi: chỉ dùng thể trọng cơ thể, tuyệt đối không dùng tạ đòn/deadlift/1RM và cần người lớn giám sát.
    - Nếu trên 60 tuổi: ưu tiên giữ thăng bằng, độ linh hoạt khớp, tăng nhịp tim từ từ và bảo vệ gối/lưng.`
-    : `4. Người dùng không có yếu tố hạn chế sức khỏe đặc biệt, vẫn cần đảm bảo tiến độ Tuần 1 mang tính xây dựng nền tảng kỷ luật, tránh quá tải đột ngột và ghi chú kỹ thuật an toàn rõ ràng ở từng buổi tập.`
+    : `5. Người dùng không có yếu tố hạn chế sức khỏe đặc biệt, vẫn cần đảm bảo tiến độ Tuần 1 mang tính xây dựng nền tảng kỷ luật, tránh quá tải đột ngột và không xếp 3 ngày liên tiếp cường độ "Cao".`
 }`;
 
-  const userPrompt = `Hãy phân tích hồ sơ và mục tiêu sau để tạo Lịch Tập Tuần 1 chi tiết:
+  const baseUserPrompt = `Hãy phân tích hồ sơ và mục tiêu sau để tạo Lịch Tập Tuần 1 chi tiết:
 
 HỒ SƠ NGƯỜI DÙNG:
 - Họ tên: ${profile.fullName}
-- Độ tuổi: ${profile.age} tuổi
+- Độ tuổi: ${profile.age} tuổi (${bmiEval.ageGroup})
 - Cân nặng: ${profile.weightKg} kg
-- Chiều cao: ${profile.heightCm} cm${bmi ? ` (BMI: ${bmi.value} — ${bmi.category})` : ''}
+- Chiều cao: ${profile.heightCm} cm${bmiEval.value !== null ? ` (BMI: ${bmiEval.value} — ${bmiEval.category})` : ''}
 - Trình độ hiện tại: ${FITNESS_LEVEL_LABELS[profile.fitnessLevel].label} (${FITNESS_LEVEL_LABELS[profile.fitnessLevel].desc})
 - Số ngày tập mỗi tuần: ${profile.daysPerWeek} ngày tập / ${7 - profile.daysPerWeek} ngày nghỉ
 - Dụng cụ có sẵn: ${EQUIPMENT_LABELS[profile.equipment].label} (${EQUIPMENT_LABELS[profile.equipment].desc})
@@ -244,13 +239,21 @@ MỤC TIÊU TẬP LUYỆN:
 Hãy trả về đúng cấu trúc JSON theo schema với đúng 7 ngày (dayIndex từ 1 đến 7).`;
 
   let lastError: unknown;
+  let lastValidationErrors: string[] = [];
   const maxAttempts = 2;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
+      const promptWithFeedback =
+        attempt === 1 || lastValidationErrors.length === 0
+          ? baseUserPrompt
+          : `${baseUserPrompt}\n\nLẦN TẠO TRƯỚC BỊ BỘ KIỂM ĐỊNH AN TOÀN TỪ CHỐI VÌ CÁC LỖI SAU — HÃY SỬA TRIỆT ĐỂ:\n${lastValidationErrors
+              .map((err) => `- ${err}`)
+              .join('\n')}`;
+
       const response = await ai.models.generateContent({
         model: 'gemini-4-hydrogen',
-        contents: userPrompt,
+        contents: promptWithFeedback,
         config: {
           systemInstruction,
           responseMimeType: 'application/json',
@@ -266,99 +269,75 @@ Hãy trả về đúng cấu trúc JSON theo schema với đúng 7 ngày (dayInd
         throw new Error('Phản hồi từ AI trống.');
       }
 
-      const parsed = JSON.parse(rawText) as {
+      let parsed: {
         strategySummary?: string;
         safetyAlert?: string;
         coachPrinciples?: string[];
-        days?: WorkoutDay[];
+        days?: unknown[];
       };
 
-      if (!Array.isArray(parsed.days) || parsed.days.length !== 7) {
-        throw new Error('Lịch tập trả về không đủ 7 ngày.');
+      try {
+        parsed = JSON.parse(rawText);
+      } catch {
+        throw new StrategyValidationError('AI trả về dữ liệu JSON không hợp lệ.', [
+          'JSON phản hồi từ AI không đúng cú pháp.',
+        ]);
       }
 
-      const sortedDays: WorkoutDay[] = [...parsed.days]
-        .sort((a, b) => (a.dayIndex ?? 0) - (b.dayIndex ?? 0))
-        .map((day, idx) => {
-          const dayIndex = idx + 1;
-          const isRestDay = Boolean(day.isRestDay);
-          return {
-            dayIndex,
-            dayLabel: DAY_LABELS[idx] ?? day.dayLabel ?? `Ngày ${dayIndex}`,
-            isRestDay,
-            title: (day.title || (isRestDay ? 'Ngày nghỉ phục hồi' : 'Buổi tập nền tảng')).trim(),
-            focusArea: (day.focusArea || (isRestDay ? 'Phục hồi chủ động' : 'Toàn thân')).trim(),
-            estimatedMinutes: Number.isFinite(Number(day.estimatedMinutes))
-              ? Math.max(0, Math.round(Number(day.estimatedMinutes)))
-              : isRestDay
-                ? 15
-                : 40,
-            intensity: normalizeIntensity(String(day.intensity ?? 'Nhẹ'), cautiousMode, isRestDay),
-            warmup: (day.warmup || 'Khởi động xoay khớp toàn thân nhẹ nhàng 5–10 phút.').trim(),
-            cooldown: (day.cooldown || 'Giãn cơ tĩnh kết hợp hít thở sâu 5 phút.').trim(),
-            safetyNote: (
-              day.safetyNote ||
-              (cautiousMode
-                ? 'Giữ nhịp độ nhẹ nhàng, dừng ngay nếu cảm thấy đau nhói khớp, chóng mặt hoặc khó thở.'
-                : 'Giữ đúng kỹ thuật trước khi tăng tốc độ hoặc mức tạ.')
-            ).trim(),
-            exercises: Array.isArray(day.exercises)
-              ? day.exercises.map((ex) => ({
-                  name: String(ex.name ?? 'Bài tập cơ bản').trim(),
-                  sets: String(ex.sets ?? '3 hiệp').trim(),
-                  repsOrDuration: String(ex.repsOrDuration ?? '10–12 lần').trim(),
-                  restSeconds: Number.isFinite(Number(ex.restSeconds))
-                    ? Math.max(0, Math.round(Number(ex.restSeconds)))
-                    : cautiousMode
-                      ? 75
-                      : 60,
-                  note: String(ex.note ?? 'Kiểm soát chuyển động chậm rãi và thở đều.').trim(),
-                }))
-              : [],
-          };
-        });
+      const validation = validateWorkoutStrategy(
+        parsed,
+        {
+          age: profile.age,
+          weightKg: profile.weightKg,
+          heightCm: profile.heightCm,
+          fitnessLevel: profile.fitnessLevel,
+          daysPerWeek: profile.daysPerWeek,
+          equipment: profile.equipment,
+          healthLimitations: profile.healthLimitations,
+          healthNotes: profile.healthNotes,
+        },
+        goal
+      );
 
-      const defaultCautiousAlert =
-        'Chế độ thận trọng đang được áp dụng bắt buộc cho hồ sơ của bạn. Toàn bộ bài tập Tuần 1 được giảm tải tác động mạnh và ưu tiên bảo vệ khớp/tim mạch. Hãy dừng tập ngay nếu thấy đau nhói, chóng mặt, tức ngực hoặc khó thở, và tham khảo ý kiến bác sĩ trước khi nâng cường độ.';
-
-      const safetyAlert = cautiousMode
-        ? parsed.safetyAlert?.trim() || defaultCautiousAlert
-        : parsed.safetyAlert?.trim() ||
-          'Khởi động kỹ trước mỗi buổi tập, kiểm soát biên độ khớp và ưu tiên kỹ thuật chuẩn trong suốt Tuần 1.';
-
-      const strategySummary =
-        parsed.strategySummary?.trim() ||
-        `Chiến lược Tuần 1 tập trung xây dựng nhịp kỷ luật ${profile.daysPerWeek} buổi/tuần cho mục tiêu ${GOAL_LABELS[goal.goalType].label} với bộ môn ${SPORT_LABELS[goal.sport].label}.`;
-
-      const coachPrinciples =
-        Array.isArray(parsed.coachPrinciples) && parsed.coachPrinciples.length > 0
-          ? parsed.coachPrinciples.map((p) => String(p).trim()).filter(Boolean).slice(0, 4)
-          : [
-              'Hoàn thành đúng lịch trước khi nghĩ tới việc tăng cường độ.',
-              'Ngủ đủ giấc và bù nước đều đặn để cơ thể thích nghi trong Tuần 1.',
-              'Lắng nghe phản hồi cơ khớp và ưu tiên kỹ thuật chuẩn ở mọi hiệp tập.',
-            ];
+      if (!validation.valid) {
+        lastValidationErrors = validation.errors;
+        throw new StrategyValidationError(
+          'Giáo án AI tạo ra chưa đạt chuẩn kiểm định an toàn.',
+          validation.errors
+        );
+      }
 
       return {
         cautiousMode,
         cautionReasons,
-        safetyAlert,
-        strategySummary,
-        coachPrinciples,
-        schedule: sortedDays,
+        safetyAlert: String(parsed.safetyAlert ?? '').trim(),
+        strategySummary: String(parsed.strategySummary ?? '').trim(),
+        coachPrinciples: (parsed.coachPrinciples ?? [])
+          .map((p) => String(p).trim())
+          .filter(Boolean)
+          .slice(0, 4),
+        schedule: validation.normalizedDays,
       };
     } catch (error) {
       lastError = error;
       console.error(`Gemini strategy generation attempt ${attempt} failed:`, error);
       if (attempt < maxAttempts) {
-        await new Promise((resolve) => setTimeout(resolve, 600 * attempt));
+        await new Promise((resolve) => setTimeout(resolve, 400 * attempt));
       }
     }
   }
 
+  if (lastError instanceof StrategyValidationError) {
+    throw lastError;
+  }
+
   const errMsg =
     lastError instanceof Error ? lastError.message : 'Lỗi không xác định khi kết nối Gemini AI.';
-  if (errMsg.includes('API_KEY_INVALID') || errMsg.includes('PERMISSION_DENIED') || errMsg.includes('403')) {
+  if (
+    errMsg.includes('API_KEY_INVALID') ||
+    errMsg.includes('PERMISSION_DENIED') ||
+    errMsg.includes('403')
+  ) {
     throw new Error(
       'Khóa Gemini API chưa hợp lệ hoặc thiếu quyền truy cập. Vui lòng kiểm tra trong mục Settings > Secrets.'
     );

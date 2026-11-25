@@ -186,6 +186,21 @@ export async function createWorkoutPlan(userId: number, input: CreateWorkoutPlan
   }
 }
 
+export async function getWorkoutPlanById(userId: number, planId: number) {
+  try {
+    const rows = await db
+      .select()
+      .from(workoutPlans)
+      .where(and(eq(workoutPlans.id, planId), eq(workoutPlans.userId, userId)))
+      .limit(1);
+
+    return rows[0] ?? null;
+  } catch (error) {
+    console.error('Database query failed in getWorkoutPlanById:', error);
+    throw new Error('Không thể tải chi tiết lịch tập. Vui lòng thử lại sau.', { cause: error });
+  }
+}
+
 export async function toggleWorkoutDayCompletion(
   userId: number,
   planId: number,

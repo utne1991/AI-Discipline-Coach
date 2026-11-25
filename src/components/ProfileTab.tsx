@@ -3,7 +3,7 @@ import {
   EQUIPMENT_LABELS,
   FITNESS_LEVEL_LABELS,
   HEALTH_LIMITATION_OPTIONS,
-  calculateBmi,
+  evaluateBmi,
   evaluateCautionStatus,
   type EquipmentOption,
   type FitnessLevel,
@@ -31,11 +31,13 @@ export function ProfileTab({
   hasUnsavedChanges,
   lastSavedAt,
 }: ProfileTabProps) {
-  const bmi = calculateBmi(form.weightKg, form.heightCm);
+  const bmiEval = evaluateBmi(form.weightKg, form.heightCm, form.age);
   const caution = evaluateCautionStatus(
     form.age,
     form.healthLimitations,
-    form.healthNotes
+    form.healthNotes,
+    form.weightKg,
+    form.heightCm
   );
 
   const toggleLimitation = (item: string) => {
@@ -146,14 +148,19 @@ export function ProfileTab({
           </div>
         </div>
 
-        {bmi && (
-          <div className="mt-4 pt-3 border-t border-slate-100 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-600">
+        <div className="mt-4 pt-3 border-t border-slate-100 space-y-1">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-600">
             <span>Chỉ số BMI tham khảo:</span>
-            <span className="font-mono-num font-semibold text-slate-900">{bmi.value}</span>
+            {bmiEval.value !== null ? (
+              <span className="font-mono-num font-semibold text-slate-900">{bmiEval.value}</span>
+            ) : (
+              <span className="font-medium text-amber-700">Chưa đủ dữ liệu</span>
+            )}
             <span aria-hidden="true">·</span>
-            <span>{bmi.category}</span>
+            <span className="font-medium text-slate-800">{bmiEval.category}</span>
           </div>
-        )}
+          <p className="text-xs text-slate-500 leading-relaxed">{bmiEval.guidance}</p>
+        </div>
       </section>
 
       <section className="bg-white rounded-2xl border border-slate-200/90 p-5 sm:p-6 space-y-5">

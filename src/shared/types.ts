@@ -2,6 +2,7 @@ export type FitnessLevel = 'beginner' | 'intermediate' | 'advanced';
 export type EquipmentOption = 'none' | 'home' | 'gym';
 export type SportOption = 'running' | 'home_workout' | 'gym';
 export type GoalType = 'weight_loss' | 'muscle_gain' | 'endurance';
+export type AgeGroup = 'youth' | 'teen' | 'adult' | 'senior' | 'unknown';
 
 export interface WorkoutExercise {
   name: string;
@@ -76,6 +77,15 @@ export interface BootstrapResponse {
   planCount: number;
 }
 
+export interface BmiEvaluation {
+  value: number | null;
+  status: 'missing_data' | 'pediatric_notice' | 'adult_classified';
+  ageGroup: AgeGroup;
+  isAdultClassification: boolean;
+  category: string;
+  guidance: string;
+}
+
 export const FITNESS_LEVEL_LABELS: Record<FitnessLevel, { label: string; desc: string }> = {
   beginner: {
     label: 'Mới bắt đầu',
@@ -148,17 +158,142 @@ export const HEALTH_LIMITATION_OPTIONS: string[] = [
   'Chấn thương cũ đang phục hồi',
 ];
 
+export function classifyAgeGroup(age: number): AgeGroup {
+  if (!Number.isFinite(age) || age <= 0) return 'unknown';
+  if (age < 16) return 'youth';
+  if (age < 18) return 'teen';
+  if (age <= 60) return 'adult';
+  return 'senior';
+}
+
+export function evaluateBmi(
+  weightKg: number,
+  heightCm: number,
+  age?: number
+): BmiEvaluation {
+  const ageGroup = age === undefined ? 'unknown' : classifyAgeGroup(age);
+
+  if (
+    !Number.isFinite(weightKg) ||
+    !Number.isFinite(heightCm) ||
+    weightKg <= 0 ||
+    heightCm <= 0 ||
+    ageGroup === 'unknown'
+  ) {
+    return {
+      value: null,
+      status: 'missing_data',
+      ageGroup,
+      isAdultClassification: false,
+      category: 'Thiếu dữ liệu đánh giá',
+      guidance:
+        'Chưa đủ thông tin tuổi, cân nặng hoặc chiều cao hợp lệ; hệ thống áp dụng chế độ thận trọng mặc định.',
+    };
+  }
+
+  const heightM = heightCm / 100;
+  const bmi = weightKg / (heightM * heightM);
+  const rounded = Math.round(bmi * 10) / 10;
+
+  if (ageGroup === 'youth' || ageGroup === 'teen') {
+    return {
+      value: rounded,
+      status: 'pediatric_notice',
+      ageGroup,
+      isAdultClassification: false,
+      category: 'Đánh giá theo bách phân vị trẻ em & vị thành niên (WHO/CDC)',
+      guidance:
+        'Không áp dụng ngưỡng phân loại BMI người lớn cho người dưới 18 tuổi. Cần đối chiếu biểu đồ BMI theo tuổi và giới tính hoặc tham khảo bác sĩ nhi khoa.',
+    };
+  }
+
+  let category = 'Cân đối';
+  let guidance = 'Chỉ số nằm trong ngưỡng tham khảo ổn định cho người trưởng thành.';
+
+  if (rounded < 18.5) {
+    category = 'Thiếu cân';
+    guidance = 'Nên ưu tiên tập kháng lực vừa phải và bổ sung dinh dưỡng đầy đủ.';
+  } else if (rounded < 23) {
+    category = 'Cân đối';
+    guidance = 'Nền tảng cân đối theo ngưỡng tham chiếu châu Á – Thái Bình Dương.';
+  } else if (rounded < 25) {
+    category = 'Thừa cân nhẹ';
+    guidance = 'Phù hợp kết hợp vận động đều đặn và kiểm soát tổng năng lượng.';
+  } else if (rounded < 30) {
+    category = 'Cần kiểm soát cân nặng';
+    guidance = 'Ưu tiên bài tập tác động thấp để bảo vệ khớp gối và cổ chân trong tuần đầu.';
+  } else {
+    category = 'Nguy cơ béo phì — cần thận trọng';
+    guidance =
+      'Chỉ số BMI >= 30: hệ thống kích hoạt chế độ thận trọng nhằm giảm tải khớp gối, cột sống và tim mạch.';
+  }
+
+  return {
+    value: rounded,
+    status: 'adult_classified',
+    ageGroup,
+    isAdultClassification: true,
+    category,
+    guidance,
+  };
+}
+
+export function calculateBmi(
+  weightKg: number,
+  heightCm: number,
+  age?: number
+): { value: number; category: string; isAdultClassification: boolean } | null {
+  const evaluation = evaluateBmi(weightKg, heightCm, age);
+  if (evaluation.value === null) return null;
+  return {
+    value: evaluation.value,
+    category: evaluation.category,
+    isAdultClassification: evaluation.isAdultClassification,
+  };
+}
+
 export function evaluateCautionStatus(
   age: number,
   healthLimitations: string[],
-  healthNotes: string
+  healthNotes: string,
+  weightKg?: number,
+  heightCm?: number
 ): { cautiousMode: boolean; cautionReasons: string[] } {
   const reasons: string[] = [];
 
-  if (Number.isFinite(age) && age > 60) {
-    reasons.push(`Độ tuổi trên 60 (${age} tuổi) — cần ưu tiên bảo vệ khớp, thăng bằng và nhịp tim`);
-  } else if (Number.isFinite(age) && age < 16) {
-    reasons.push(`Độ tuổi dưới 16 (${age} tuổi) — cần ưu tiên kỹ thuật thể trọng cơ thể, tránh tạ nặng`);
+  if (!Number.isFinite(age) || age <= 0) {
+    reasons.push('Thiếu thông tin độ tuổi hợp lệ — áp dụng chế độ thận trọng mặc định');
+  } else if (age > 60) {
+    reasons.push(
+      `Độ tuổi trên 60 (${age} tuổi) — ưu tiên bảo vệ khớp, thăng bằng và kiểm soát nhịp tim`
+    );
+  } else if (age < 16) {
+    reasons.push(
+      `Độ tuổi dưới 16 (${age} tuổi) — ưu tiên kỹ thuật thể trọng cơ thể, tránh tạ nặng và cần người lớn giám sát`
+    );
+  }
+
+  if (
+    (weightKg !== undefined && (!Number.isFinite(weightKg) || weightKg <= 0)) ||
+    (heightCm !== undefined && (!Number.isFinite(heightCm) || heightCm <= 0))
+  ) {
+    reasons.push('Thiếu dữ liệu cân nặng hoặc chiều cao — áp dụng chế độ thận trọng mặc định');
+  } else if (
+    weightKg !== undefined &&
+    heightCm !== undefined &&
+    Number.isFinite(age) &&
+    age >= 18
+  ) {
+    const bmiEval = evaluateBmi(weightKg, heightCm, age);
+    if (bmiEval.value !== null && bmiEval.value < 16.5) {
+      reasons.push(
+        `BMI rất thấp (${bmiEval.value}) — cần tránh kiệt sức, ưu tiên bài tập nhẹ và phục hồi`
+      );
+    } else if (bmiEval.value !== null && bmiEval.value >= 30) {
+      reasons.push(
+        `BMI cao (${bmiEval.value}) — ưu tiên bài tập tác động thấp để bảo vệ khớp và tim mạch`
+      );
+    }
   }
 
   const cleanLimitations = healthLimitations.map((s) => s.trim()).filter(Boolean);
@@ -175,21 +310,4 @@ export function evaluateCautionStatus(
     cautiousMode: reasons.length > 0,
     cautionReasons: reasons,
   };
-}
-
-export function calculateBmi(weightKg: number, heightCm: number): { value: number; category: string } | null {
-  if (!Number.isFinite(weightKg) || !Number.isFinite(heightCm) || weightKg <= 0 || heightCm <= 0) {
-    return null;
-  }
-  const heightM = heightCm / 100;
-  const bmi = weightKg / (heightM * heightM);
-  const rounded = Math.round(bmi * 10) / 10;
-
-  let category = 'Bình thường';
-  if (rounded < 18.5) category = 'Thiếu cân';
-  else if (rounded < 23) category = 'Cân đối';
-  else if (rounded < 25) category = 'Thừa cân nhẹ';
-  else category = 'Cần kiểm soát cân nặng';
-
-  return { value: rounded, category };
 }
