@@ -109,11 +109,11 @@ const defaultGoal: ValidatorGoalContext = {
   durationWeeks: 8,
 };
 
-test('parseRepsOrDuration extracts reps and duration minutes accurately', () => {
-  assert.deepEqual(parseRepsOrDuration('10-12 lần'), { reps: 12, durationMinutes: null });
-  assert.deepEqual(parseRepsOrDuration('45 giây'), { reps: null, durationMinutes: 0.75 });
-  assert.deepEqual(parseRepsOrDuration('20 phút'), { reps: null, durationMinutes: 20 });
-  assert.deepEqual(parseRepsOrDuration('15 reps'), { reps: 15, durationMinutes: null });
+test('parseRepsOrDuration extracts reps and duration units accurately', () => {
+  assert.deepEqual(parseRepsOrDuration('10-12 lần'), { kind: 'reps', maxValue: 12 });
+  assert.deepEqual(parseRepsOrDuration('45 giây'), { kind: 'seconds', maxValue: 45 });
+  assert.deepEqual(parseRepsOrDuration('20 phút'), { kind: 'minutes', maxValue: 20 });
+  assert.deepEqual(parseRepsOrDuration('15 reps'), { kind: 'reps', maxValue: 15 });
 });
 
 test('accepts a valid 7-day plan matching daysPerWeek and equipment', () => {
@@ -214,7 +214,7 @@ test('enforces rep limits, per-exercise duration, daily sets, and weekly trainin
   excessExerciseDurationPlan.days[0].exercises[0].repsOrDuration = '95 phút';
   const durRes = validateWorkoutStrategy(excessExerciseDurationPlan, standardProfile, defaultGoal);
   assert.equal(durRes.valid, false);
-  assert.ok(durRes.errors.some((e) => e.includes('thời lượng bài tập')));
+  assert.ok(durRes.errors.some((e) => e.includes('thời lượng bài')));
 
   const excessDailySetsPlan = buildValid7DayPlan([1, 3, 5]);
   excessDailySetsPlan.days[0].exercises = [
@@ -250,7 +250,7 @@ test('enforces dedicated safety rules for youth (<16), teen (16-17), and medical
   teen1RmPlan.days[0].exercises[0].name = 'Thử sức 1RM Bench Press';
   const teenRes = validateWorkoutStrategy(teen1RmPlan, teenProfile, defaultGoal);
   assert.equal(teenRes.valid, false);
-  assert.ok(teenRes.errors.some((e) => e.includes('dưới 18 tuổi')));
+  assert.ok(teenRes.errors.some((e) => e.includes('vị thành niên')));
 
   const teenMissingGuardianAlert = buildValid7DayPlan([1, 3, 5], { cautious: true, minor: false });
   const teenAlertRes = validateWorkoutStrategy(teenMissingGuardianAlert, teenProfile, defaultGoal);

@@ -23,8 +23,11 @@ export interface RawAiProfileSource {
 
 export interface RawAiGoalSource {
   sport: SportOption;
+  sports?: SportOption[];
   goalType: GoalType;
   durationWeeks: number;
+  measurableGoal?: import('../shared/types.ts').MeasurableGoalSpec;
+  schedulePreferences?: Partial<import('../shared/types.ts').SchedulePreferences>;
 }
 
 /**
@@ -45,8 +48,12 @@ export interface MinimizedAiPayload {
   safetyProfile: SafetyProfile;
   goal: {
     sport: SportOption;
+    sports: SportOption[];
     goalType: GoalType;
     durationWeeks: number;
+    measurableTargetSummary?: string;
+    preferredTimeSlot?: string;
+    minutesPerSessionBudget?: number;
   };
 }
 
@@ -124,6 +131,13 @@ export function buildMinimizedAiPayload(
     bmiSummary = `Phân nhóm thể trạng người lớn: ${bmiEval.category}`;
   }
 
+  const normalizedSports: SportOption[] = Array.isArray(goal.sports) && goal.sports.length > 0
+    ? Array.from(new Set(goal.sports)).slice(0, 3)
+    : [goal.sport];
+  const measurableTargetSummary = goal.measurableGoal
+    ? `${stripDirectIdentifiers(goal.measurableGoal.targetLabel).slice(0, 120)} (${goal.measurableGoal.currentValue} -> ${goal.measurableGoal.targetValue} ${goal.measurableGoal.unit})`
+    : undefined;
+
   return {
     ageGroup: safetyProfile.ageGroup,
     ageBracket: toAgeBracket(profile.age),
@@ -137,9 +151,17 @@ export function buildMinimizedAiPayload(
     clinicalRiskFlags,
     safetyProfile,
     goal: {
-      sport: goal.sport,
+      sport: normalizedSports[0] ?? goal.sport,
+      sports: normalizedSports,
       goalType: goal.goalType,
       durationWeeks: goal.durationWeeks,
+      ...(measurableTargetSummary ? { measurableTargetSummary } : {}),
+      ...(goal.schedulePreferences?.preferredTimeSlot
+        ? { preferredTimeSlot: goal.schedulePreferences.preferredTimeSlot }
+        : {}),
+      ...(goal.schedulePreferences?.minutesPerSessionBudget
+        ? { minutesPerSessionBudget: goal.schedulePreferences.minutesPerSessionBudget }
+        : {}),
     },
   };
 }

@@ -42,15 +42,16 @@ test('buildMinimizedAiPayload and buildGeminiPrompt completely omit fullName and
   assert.equal(serializedPayload.includes(secretPhone), false);
   assert.equal(serializedPayload.includes(secretUrl), false);
 
-  assert.equal(prompt.includes(secretName), false);
-  assert.equal(prompt.includes(secretEmail), false);
-  assert.equal(prompt.includes(secretPhone), false);
-  assert.equal(prompt.includes(secretUrl), false);
+  const fullPromptText = `${prompt.systemInstruction}\n${prompt.userPrompt}`;
+  assert.equal(fullPromptText.includes(secretName), false);
+  assert.equal(fullPromptText.includes(secretEmail), false);
+  assert.equal(fullPromptText.includes(secretPhone), false);
+  assert.equal(fullPromptText.includes(secretUrl), false);
 
   // Clinical risk tags preserved for safe training decisions
-  assert.ok(minimized.clinicalRiskFlags.includes('cardiopulmonary_warning'));
-  assert.ok(minimized.clinicalRiskFlags.includes('spine_disc_precaution'));
-  assert.equal(minimized.ageBracket, '30-39');
+  assert.ok(minimized.clinicalRiskFlags.includes('can_than_trong_tim_mach'));
+  assert.ok(minimized.clinicalRiskFlags.includes('han_che_cot_song_lung'));
+  assert.equal(minimized.ageBracket, '30_44');
 
   const stripped = stripDirectIdentifiers(`Email ${secretEmail}, phone ${secretPhone}, link ${secretUrl}`);
   assert.equal(stripped.includes(secretEmail), false);
@@ -88,7 +89,7 @@ test('resolveRuntimeConfig enforces strict environment & provider separation and
         DATA_PROVIDER: 'postgres',
         AI_PROVIDER: 'mock',
       }),
-    /Mock AI is strictly forbidden in production/i
+    /AI_PROVIDER="mock" is strictly forbidden in production/i
   );
 
   assert.throws(
@@ -149,7 +150,7 @@ test('generateWeekOneStrategy with provider=gemini NEVER silently falls back to 
             goalType: 'weight_loss',
             durationWeeks: 8,
           },
-          { provider: 'gemini' }
+          { providerOverride: 'gemini' }
         ),
       /GEMINI|Gemini API/i
     );

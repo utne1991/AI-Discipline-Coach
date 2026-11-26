@@ -1,6 +1,7 @@
 import {
   loadUserFitnessData,
   saveDailyGoalToFirestore,
+  saveSmartwatchConnectionToFirestore,
   saveUserConsentToFirestore,
   saveUserGoalToFirestore,
   saveUserProfileToFirestore,
@@ -20,6 +21,7 @@ export const firestoreClientRepository: ClientDataRepository = {
   saveUserProfile: saveUserProfileToFirestore,
   saveUserGoal: saveUserGoalToFirestore,
   saveUserConsent: saveUserConsentToFirestore,
+  saveSmartwatchConnection: saveSmartwatchConnectionToFirestore,
   saveWorkoutPlan: saveWorkoutPlanToFirestore,
   togglePlanDay: togglePlanDayInFirestore,
   saveDailyGoal: saveDailyGoalToFirestore,

@@ -40,11 +40,39 @@ export interface ProfileData {
   updatedAt?: string;
 }
 
+export type PreferredTimeSlot = 'morning' | 'noon' | 'evening';
+
+export type MeasurableMetricKey =
+  | 'run_distance_km'
+  | 'weight_change_kg'
+  | 'weekly_sessions'
+  | 'strength_reps'
+  | 'endurance_minutes';
+
+export interface MeasurableGoalSpec {
+  metricKey: MeasurableMetricKey;
+  targetLabel: string;
+  currentValue: number;
+  targetValue: number;
+  unit: string;
+}
+
+export interface SchedulePreferences {
+  startDateKey: string; // YYYY-MM-DD in user's local timezone
+  timezone: string; // IANA timezone e.g. Asia/Ho_Chi_Minh
+  preferredTimeSlot: PreferredTimeSlot;
+  minutesPerSessionBudget: number; // 20..90
+  preferredDays?: number[]; // optional 1..7 weekday preferences
+}
+
 export interface GoalData {
   id?: number;
   sport: SportOption;
+  sports?: SportOption[]; // Multi-sport support (1..3); sport remains primary for backward compatibility
   goalType: GoalType;
   durationWeeks: number;
+  measurableGoal?: MeasurableGoalSpec;
+  schedulePreferences?: SchedulePreferences;
   updatedAt?: string;
 }
 
@@ -61,12 +89,100 @@ export interface ConsentRecord {
   updatedAt?: string;
 }
 
+export type FeasibilityStatus = 'feasible' | 'ambitious_adjust' | 'caution_required';
+
+export interface FeasibilityAssessment {
+  status: FeasibilityStatus;
+  score: number; // 0..100 deterministic pacing feasibility index
+  baselineSummary: string;
+  weeklyDeltaRequired: string;
+  recommendedDurationWeeks: number;
+  rationale: string;
+  adjustments: string[];
+}
+
+export interface StrategyPhase {
+  phaseNumber: number;
+  name: string;
+  weekStart: number;
+  weekEnd: number;
+  objective: string;
+  weeklyVolumeTarget: string;
+  milestone: string;
+}
+
+export interface StrategyMilestone {
+  weekNumber: number;
+  title: string;
+  measurableCheck: string;
+  passCriteria: string;
+}
+
+export interface SportVolumePlan {
+  sport: SportOption;
+  sportLabel: string;
+  sessionsPerWeek: number;
+  weeklyMinutes: number;
+  volumeMetricLabel: string; // e.g., "10–14 km/tuần" or "36 hiệp/tuần"
+  intensityDistribution: string; // e.g., "80% Nhẹ · 20% Trung bình"
+  rationale: string;
+}
+
+export interface ScheduledCalendarDay {
+  dayIndex: number; // 1..7
+  dateKey: string; // YYYY-MM-DD
+  dayLabel: string;
+  timeWindow: string; // e.g. "06:00–07:00"
+  isRestDay: boolean;
+}
+
+export interface DailyStrategyTask {
+  id: string;
+  dayIndex: number;
+  dateKey: string;
+  category: 'training' | 'recovery' | 'discipline' | 'measurement';
+  title: string;
+  detail: string;
+  estimatedMinutes: number;
+}
+
+export interface StrategyV2Blueprint {
+  engineVersion: '2.0';
+  sports: SportOption[];
+  measurableGoal: MeasurableGoalSpec;
+  feasibility: FeasibilityAssessment;
+  // 8 mandatory strategic pillars required from AI Agent
+  ultimateGoal: string;
+  currentPosition: string;
+  phases: StrategyPhase[];
+  milestones: StrategyMilestone[];
+  volumeAllocation: SportVolumePlan[];
+  todayDirective: string;
+  reassessmentSchedule: string;
+  adjustmentSignals: string[];
+  stopAndEscalateCriteria: string[];
+  // Real-calendar scheduling & daily tasks derived from strategy
+  calendarContext: {
+    startDateKey: string;
+    timezone: string;
+    preferredTimeSlot: PreferredTimeSlot;
+    timeWindowLabel: string;
+    minutesPerSessionBudget: number;
+    scheduledDays: ScheduledCalendarDay[];
+  };
+  dailyCommitments: DailyStrategyTask[];
+}
+
 export interface WorkoutPlanData {
   id: number;
   weekNumber: number;
   sport: SportOption;
+  sports?: SportOption[];
   goalType: GoalType;
   durationWeeks: number;
+  versionNumber?: number;
+  parentPlanId?: number | null;
+  revisionReason?: string;
   cautiousMode: boolean;
   cautionReasons: string[];
   safetyAlert: string;
@@ -74,11 +190,33 @@ export interface WorkoutPlanData {
   coachPrinciples: string[];
   scheduleJson: WorkoutDay[];
   completedDays: number[];
+  strategyV2?: StrategyV2Blueprint;
   aiProvider?: AiProviderName;
   isSimulated?: boolean;
   createdAt: string;
   updatedAt?: string;
 }
+
+export const TIME_SLOT_LABELS: Record<
+  PreferredTimeSlot,
+  { label: string; window: string; desc: string }
+> = {
+  morning: {
+    label: 'Buổi sáng',
+    window: '06:00–07:30',
+    desc: 'Khởi đầu ngày mới kỷ luật, ít bị công việc chen ngang',
+  },
+  noon: {
+    label: 'Buổi trưa',
+    window: '12:00–13:15',
+    desc: 'Buổi tập gọn nhẹ giữa ngày tái tạo tập trung',
+  },
+  evening: {
+    label: 'Buổi tối',
+    window: '18:00–20:00',
+    desc: 'Giải tỏa căng thẳng sau giờ làm, kết thúc trước ngủ >= 2 giờ',
+  },
+};
 
 export interface BootstrapResponse {
   user: {

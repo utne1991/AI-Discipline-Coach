@@ -116,11 +116,107 @@ export function validateGoalPayload(body: Record<string, unknown>) {
     return { error: 'Thời hạn mục tiêu phải nằm trong khoảng 4 đến 12 tuần.' };
   }
 
+  let sports: SportOption[] | undefined;
+  if (Array.isArray(body.sports)) {
+    const filtered = Array.from(
+      new Set(
+        body.sports.filter(
+          (item): item is SportOption => typeof item === 'string' && VALID_SPORTS.includes(item as SportOption)
+        )
+      )
+    ).slice(0, 3);
+    if (filtered.length > 0) {
+      sports = filtered;
+    }
+  }
+
+  let measurableGoal: import('../shared/types.ts').MeasurableGoalSpec | undefined;
+  if (body.measurableGoal && typeof body.measurableGoal === 'object' && !Array.isArray(body.measurableGoal)) {
+    const mg = body.measurableGoal as Record<string, unknown>;
+    const validMetrics = new Set([
+      'run_distance_km',
+      'weight_change_kg',
+      'weekly_sessions',
+      'strength_reps',
+      'endurance_minutes',
+    ]);
+    const metricKey = typeof mg.metricKey === 'string' && validMetrics.has(mg.metricKey)
+      ? (mg.metricKey as import('../shared/types.ts').MeasurableMetricKey)
+      : 'weekly_sessions';
+    const targetLabel = typeof mg.targetLabel === 'string' ? mg.targetLabel.trim().slice(0, 120) : '';
+    const currentValue = Number(mg.currentValue);
+    const targetValue = Number(mg.targetValue);
+    const unit = typeof mg.unit === 'string' ? mg.unit.trim().slice(0, 24) : '';
+    if (
+      targetLabel.length >= 2 &&
+      Number.isFinite(currentValue) &&
+      currentValue >= 0 &&
+      currentValue <= 1000 &&
+      Number.isFinite(targetValue) &&
+      targetValue > 0 &&
+      targetValue <= 1000 &&
+      unit.length >= 1
+    ) {
+      measurableGoal = {
+        metricKey,
+        targetLabel,
+        currentValue: Math.round(currentValue * 10) / 10,
+        targetValue: Math.round(targetValue * 10) / 10,
+        unit,
+      };
+    }
+  }
+
+  let schedulePreferences: Partial<import('../shared/types.ts').SchedulePreferences> | undefined;
+  if (
+    body.schedulePreferences &&
+    typeof body.schedulePreferences === 'object' &&
+    !Array.isArray(body.schedulePreferences)
+  ) {
+    const sp = body.schedulePreferences as Record<string, unknown>;
+    const slot =
+      sp.preferredTimeSlot === 'morning' ||
+      sp.preferredTimeSlot === 'noon' ||
+      sp.preferredTimeSlot === 'evening'
+        ? sp.preferredTimeSlot
+        : 'evening';
+    const budget = Number(sp.minutesPerSessionBudget);
+    const startDateKey =
+      typeof sp.startDateKey === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(sp.startDateKey)
+        ? sp.startDateKey
+        : undefined;
+    const timezone =
+      typeof sp.timezone === 'string' && sp.timezone.trim().length > 0
+        ? sp.timezone.trim().slice(0, 64)
+        : undefined;
+    const preferredDays = Array.isArray(sp.preferredDays)
+      ? Array.from(
+          new Set(
+            sp.preferredDays
+              .map((d) => Number(d))
+              .filter((d) => Number.isInteger(d) && d >= 1 && d <= 7)
+          )
+        ).sort((a, b) => a - b)
+      : undefined;
+
+    schedulePreferences = {
+      preferredTimeSlot: slot,
+      minutesPerSessionBudget:
+        Number.isFinite(budget) && budget >= 20 && budget <= 90 ? Math.round(budget) : 40,
+      ...(startDateKey ? { startDateKey } : {}),
+      ...(timezone ? { timezone } : {}),
+      ...(preferredDays && preferredDays.length > 0 ? { preferredDays } : {}),
+    };
+  }
+
   return {
     data: {
-      sport,
+      sport: sports?.[0] ?? sport,
+      ...(sports ? { sports } : {}),
       goalType,
       durationWeeks,
+      ...(measurableGoal ? { measurableGoal } : {}),
+      ...(schedulePreferences ? { schedulePreferences } : {}),
     },
   };
 }
@@ -293,13 +389,30 @@ export function createApp(deps: CreateAppDependencies = {}) {
         const { fullName: _omittedName, ...minimizedProfile } = validatedProfile.data;
         const generated = await runStrategyGenerator(minimizedProfile, validatedGoal.data);
 
+        const rawVersion = Number(body.versionNumber);
+        const versionNumber =
+          Number.isInteger(rawVersion) && rawVersion >= 1 && rawVersion <= 999 ? rawVersion : 1;
+        const rawParentId = Number(body.parentPlanId);
+        const parentPlanId =
+          Number.isInteger(rawParentId) && rawParentId > 0 ? rawParentId : null;
+        const revisionReason =
+          typeof body.revisionReason === 'string' && body.revisionReason.trim().length > 0
+            ? body.revisionReason.trim().slice(0, 160)
+            : versionNumber > 1
+              ? 'Cập nhật chiến lược theo mục tiêu mới'
+              : 'Khởi tạo chiến lược ban đầu';
+
         return res.status(201).json({
           plan: {
             id: Date.now(),
             weekNumber: 1,
             sport: validatedGoal.data.sport,
+            sports: generated.sports ?? validatedGoal.data.sports ?? [validatedGoal.data.sport],
             goalType: validatedGoal.data.goalType,
             durationWeeks: validatedGoal.data.durationWeeks,
+            versionNumber,
+            parentPlanId,
+            revisionReason,
             cautiousMode: generated.cautiousMode,
             cautionReasons: generated.cautionReasons,
             safetyAlert: generated.safetyAlert,
@@ -307,6 +420,7 @@ export function createApp(deps: CreateAppDependencies = {}) {
             coachPrinciples: generated.coachPrinciples,
             scheduleJson: generated.schedule,
             completedDays: [],
+            ...(generated.strategyV2 ? { strategyV2: generated.strategyV2 } : {}),
             aiProvider: generated.aiProvider,
             isSimulated: generated.isSimulated,
             createdAt: new Date().toISOString(),
@@ -368,6 +482,16 @@ export function createApp(deps: CreateAppDependencies = {}) {
       return res.status(201).json({
         plan: {
           ...savedPlan,
+          sports: generated.sports ?? [state.goal.sport as SportOption],
+          versionNumber: state.planCount + 1,
+          parentPlanId: state.latestPlan?.id ?? null,
+          revisionReason:
+            typeof body.revisionReason === 'string' && body.revisionReason.trim().length > 0
+              ? body.revisionReason.trim().slice(0, 160)
+              : state.planCount > 0
+                ? 'Cập nhật chiến lược theo mục tiêu mới'
+                : 'Khởi tạo chiến lược ban đầu',
+          ...(generated.strategyV2 ? { strategyV2: generated.strategyV2 } : {}),
           aiProvider: generated.aiProvider,
           isSimulated: generated.isSimulated,
         },

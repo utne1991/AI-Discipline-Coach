@@ -1,4 +1,5 @@
 import type { DailyGoalData } from '../lib/dailyGoal.ts';
+import type { SmartwatchConnectionData } from '../lib/smartwatch.ts';
 import type {
   ConsentRecord,
   GoalData,
@@ -54,9 +55,12 @@ export interface ClientBootstrapData {
   profile: ProfileData | null;
   goal: GoalData | null;
   consent: ConsentRecord | null;
+  smartwatchConnection: SmartwatchConnectionData | null;
   latestPlan: WorkoutPlanData | null;
   allPlans: WorkoutPlanData[];
   todayDailyGoal: DailyGoalData | null;
+  monthlyDailyGoals: DailyGoalData[];
+  allDailyGoals: DailyGoalData[];
 }
 
 /**
@@ -68,6 +72,10 @@ export interface ClientDataRepository {
   saveUserProfile: (uid: string, input: ProfileData) => Promise<ProfileData>;
   saveUserGoal: (uid: string, input: GoalData) => Promise<GoalData>;
   saveUserConsent: (uid: string, input: ConsentRecord) => Promise<ConsentRecord>;
+  saveSmartwatchConnection: (
+    uid: string,
+    input: Partial<SmartwatchConnectionData>
+  ) => Promise<SmartwatchConnectionData>;
   saveWorkoutPlan: (
     uid: string,
     plan: Omit<WorkoutPlanData, 'id' | 'createdAt' | 'completedDays'> & {

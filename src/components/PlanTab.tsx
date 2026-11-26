@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
 import {
+  CalendarCheck,
   CheckCircle2,
   Circle,
   Clock,
+  Flame,
   History,
   Pencil,
   RefreshCw,
@@ -23,9 +25,12 @@ import {
 import {
   DAILY_GOAL_MAX_LENGTH,
   DAILY_GOAL_SUGGESTIONS,
+  calculateDisciplineStreak,
+  calculateMonthlyDailyGoalStats,
   formatDailyGoalDateLabel,
   getTodayDateKey,
   type DailyGoalData,
+  type MonthlyWeeklyGoalBucket,
 } from '../lib/dailyGoal.ts';
 import {
   GOAL_LABELS,
@@ -36,6 +41,12 @@ import {
   type WorkoutDay,
   type WorkoutPlanData,
 } from '../shared/types.ts';
+import type { SmartwatchConnectionData } from '../lib/smartwatch.ts';
+import {
+  PersonalArchiveExportPanel,
+  SmartwatchSyncPanel,
+} from './SmartwatchAndExportSection.tsx';
+import { StrategyV2RoadmapPanel } from './StrategyV2RoadmapPanel.tsx';
 
 interface PlanTabProps {
   plan: WorkoutPlanData | null;
@@ -46,10 +57,16 @@ interface PlanTabProps {
   togglingDayIndex: number | null;
   aiConsent: boolean;
   dailyGoal: DailyGoalData | null;
+  monthlyDailyGoals: DailyGoalData[];
+  allDailyGoals: DailyGoalData[];
+  smartwatchConnection: SmartwatchConnectionData | null;
+  isSavingSmartwatch: boolean;
+  reminderTime?: string;
   isSavingDailyGoal: boolean;
   isTogglingDailyGoal: boolean;
   onSaveDailyGoal: (title: string) => Promise<boolean>;
   onToggleDailyGoal: () => Promise<void>;
+  onSaveSmartwatchConnection: (input: Partial<SmartwatchConnectionData>) => Promise<boolean>;
   onGeneratePlan: () => Promise<void>;
   onToggleDayComplete: (planId: number, dayIndex: number) => Promise<void>;
   onGoToProfile: () => void;
@@ -591,6 +608,142 @@ export function DailyGoalTracker({
   );
 }
 
+export function DisciplineStreakCounter({
+  goals,
+  referenceDate,
+}: {
+  goals: DailyGoalData[];
+  referenceDate?: Date;
+}) {
+  const streak = calculateDisciplineStreak(goals, referenceDate);
+
+  let statusLabel = 'Bắt đầu chuỗi từ hôm nay';
+  let statusColorClass = 'text-slate-500';
+  let iconBoxClass = 'bg-slate-100 text-slate-600';
+  let guidanceText =
+    'Hoàn thành mục tiêu nhỏ hôm nay để khởi động ngày đầu tiên của chuỗi kỷ luật cá nhân.';
+
+  if (streak.currentStreakDays > 0 && streak.completedToday) {
+    statusLabel = 'Hôm nay đã giữ vững chuỗi';
+    statusColorClass = 'text-teal-700';
+    iconBoxClass = 'bg-teal-50 text-teal-700';
+    guidanceText =
+      streak.currentStreakDays >= 7
+        ? 'Nhịp kỷ luật rất vững! Duy trì ít nhất một mục tiêu nhỏ mỗi ngày để nối dài chuỗi.'
+        : 'Bạn đã hoàn thành mục tiêu hôm nay. Tiếp tục giữ nhịp vào ngày mai để nối dài chuỗi.';
+  } else if (streak.streakAtRisk) {
+    statusLabel = 'Cần hoàn thành hôm nay để giữ chuỗi';
+    statusColorClass = 'text-amber-800';
+    iconBoxClass = 'bg-amber-50 text-amber-700';
+    guidanceText =
+      'Bạn đang có chuỗi liên tiếp từ hôm qua. Đánh dấu hoàn thành mục tiêu nhỏ hôm nay để tăng chuỗi thêm 1 ngày.';
+  }
+
+  return (
+    <section
+      aria-label="Chuỗi ngày kỷ luật"
+      className="bg-white rounded-2xl border border-slate-200/90 p-5"
+    >
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 pb-4 border-b border-slate-100">
+        <div className="flex items-start gap-2.5">
+          <div
+            className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 mt-0.5 ${iconBoxClass}`}
+          >
+            <Flame className="w-4 h-4" />
+          </div>
+          <div>
+            <p className="text-xs text-slate-500">Streak Counter · Mục tiêu nhỏ hằng ngày</p>
+            <h2 className="text-base sm:text-lg font-bold text-slate-900 tracking-tight">
+              Chuỗi ngày kỷ luật
+            </h2>
+          </div>
+        </div>
+
+        <p className={`text-xs font-semibold ${statusColorClass}`}>{statusLabel}</p>
+      </div>
+
+      <div className="grid grid-cols-2 divide-x divide-slate-100 py-4 border-b border-slate-100">
+        <div className="pr-3">
+          <p className="text-xs text-slate-500">Chuỗi hiện tại</p>
+          <p className="mt-1 text-xl sm:text-2xl font-mono-num font-bold text-teal-600">
+            {streak.currentStreakDays} ngày liên tiếp
+          </p>
+          <p className="mt-0.5 text-xs text-slate-500">
+            Tính theo ngày hoàn thành ít nhất 1 mục tiêu nhỏ
+          </p>
+        </div>
+
+        <div className="pl-4">
+          <p className="text-xs text-slate-500">Chuỗi dài nhất trong tháng</p>
+          <p className="mt-1 text-xl sm:text-2xl font-mono-num font-bold text-slate-900">
+            {streak.longestStreakDays} ngày
+          </p>
+          <p className="mt-0.5 text-xs text-slate-500">
+            {streak.completedToday ? 'Đã ghi nhận hôm nay' : 'Chưa hoàn thành hôm nay'}
+          </p>
+        </div>
+      </div>
+
+      <div className="pt-4 space-y-3">
+        <div>
+          <p className="text-xs font-medium text-slate-600 mb-2">Nhịp 7 ngày gần nhất</p>
+          <div
+            className="grid grid-cols-7 gap-1.5"
+            aria-label="Trạng thái hoàn thành mục tiêu nhỏ 7 ngày gần nhất"
+          >
+            {streak.recentDays.map((day) => {
+              const statusText = day.completed
+                ? 'Đã hoàn thành mục tiêu nhỏ'
+                : day.isToday
+                  ? 'Hôm nay chưa hoàn thành'
+                  : 'Chưa hoàn thành';
+              const label = `Ngày ${formatDailyGoalDateLabel(day.dateKey)}: ${statusText}`;
+              return (
+                <div
+                  key={day.dateKey}
+                  title={label}
+                  aria-label={label}
+                  className={`rounded-xl py-2 px-1 flex flex-col items-center justify-center gap-0.5 border text-center ${
+                    day.completed
+                      ? 'bg-teal-600 text-white border-teal-700'
+                      : day.isToday
+                        ? 'bg-amber-50 text-amber-950 border-amber-300'
+                        : 'bg-slate-50 text-slate-500 border-slate-200/70'
+                  }`}
+                >
+                  <span
+                    className={`text-[10px] font-medium ${
+                      day.completed ? 'text-teal-100' : 'text-slate-500'
+                    }`}
+                  >
+                    {day.shortLabel}
+                  </span>
+                  <span className="text-xs font-mono-num font-bold">{day.dayNumber}</span>
+                  <span
+                    className={`text-[10px] font-semibold ${
+                      day.completed
+                        ? 'text-white'
+                        : day.isToday
+                          ? 'text-amber-800'
+                          : 'text-slate-400'
+                    }`}
+                  >
+                    {day.completed ? 'Xong' : day.isToday ? 'Nay' : '—'}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <p className="text-xs text-slate-600 leading-relaxed pt-1 border-t border-slate-100">
+          {guidanceText}
+        </p>
+      </div>
+    </section>
+  );
+}
+
 export interface WorkoutHistoryEntry {
   key: string;
   planId: number;
@@ -787,6 +940,311 @@ export function WorkoutHistoryTable({ plans }: { plans: WorkoutPlanData[] }) {
   );
 }
 
+function MonthlyGoalChartTooltip({
+  active,
+  payload,
+}: {
+  active?: boolean;
+  payload?: ReadonlyArray<{ payload?: MonthlyWeeklyGoalBucket }>;
+}) {
+  if (!active || !payload || payload.length === 0) {
+    return null;
+  }
+  const bucket = payload[0]?.payload;
+  if (!bucket) {
+    return null;
+  }
+
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-sm text-xs">
+      <p className="font-semibold text-slate-900">
+        {bucket.label} ({bucket.rangeLabel})
+      </p>
+      <p className="font-mono-num font-semibold text-teal-600 mt-1">
+        Hoàn thành: {bucket.completedCount}/{bucket.totalDays} ngày
+      </p>
+      {bucket.pendingCount > 0 && (
+        <p className="font-mono-num text-amber-800 mt-0.5">
+          Chưa hoàn thành: {bucket.pendingCount} mục tiêu
+        </p>
+      )}
+    </div>
+  );
+}
+
+export function MonthlyDailyGoalStats({
+  goals,
+  referenceDate,
+}: {
+  goals: DailyGoalData[];
+  referenceDate?: Date;
+}) {
+  const [viewMode, setViewMode] = useState<'chart' | 'grid'>('chart');
+  const stats = calculateMonthlyDailyGoalStats(goals, referenceDate);
+
+  let momentumNote =
+    'Hãy đặt mục tiêu nhỏ đầu tiên trong tháng để bắt đầu xây dựng nhịp kỷ luật mỗi ngày.';
+  if (stats.completedCount >= 20) {
+    momentumNote = 'Nhịp kỷ luật rất bền bỉ! Bạn đang biến những cam kết nhỏ thành thói quen dài hạn.';
+  } else if (stats.completedCount >= 10) {
+    momentumNote = 'Tiến bộ rõ rệt trong tháng. Tiếp tục duy trì từng cam kết nhỏ đều đặn mỗi ngày.';
+  } else if (stats.completedCount > 0) {
+    momentumNote = 'Khởi đầu tích cực! Mỗi mục tiêu nhỏ hoàn thành đều củng cố kỷ luật cá nhân.';
+  }
+
+  return (
+    <section
+      aria-label="Thống kê mục tiêu nhỏ trong tháng"
+      className="bg-white rounded-2xl border border-slate-200/90 p-5"
+    >
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 pb-4 border-b border-slate-100">
+        <div className="flex items-start gap-2.5">
+          <div className="w-9 h-9 rounded-xl bg-teal-50 text-teal-700 flex items-center justify-center shrink-0 mt-0.5">
+            <CalendarCheck className="w-4 h-4" />
+          </div>
+          <div>
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-500">
+              <span>Kỷ luật cá nhân</span>
+              <span aria-hidden="true">·</span>
+              <span className="font-mono-num">{stats.monthLabel}</span>
+            </div>
+            <h2 className="text-base sm:text-lg font-bold text-slate-900 tracking-tight">
+              Tiến bộ mục tiêu nhỏ trong tháng
+            </h2>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500">
+          <span className="font-mono-num font-semibold text-teal-700">
+            {stats.completedCount} mục tiêu hoàn thành
+          </span>
+          <span aria-hidden="true">·</span>
+          <span className="font-mono-num">
+            Chuỗi {stats.currentStreakDays} ngày
+          </span>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 divide-x divide-slate-100 py-4 border-b border-slate-100">
+        <div className="pr-3">
+          <p className="text-xs text-slate-500">Tổng mục tiêu nhỏ hoàn thành</p>
+          <p className="mt-1 text-xl sm:text-2xl font-mono-num font-bold text-teal-600">
+            {stats.completedCount} mục tiêu
+          </p>
+          <p className="mt-0.5 text-xs font-mono-num text-slate-500">
+            {stats.completedCount}/{stats.daysInMonth} ngày trong tháng ({stats.completionRateOfMonth}%)
+          </p>
+        </div>
+
+        <div className="pl-4">
+          <p className="text-xs text-slate-500">Tỷ lệ hoàn thành mục tiêu đã đặt</p>
+          <p className="mt-1 text-xl sm:text-2xl font-mono-num font-bold text-slate-900">
+            {stats.completionRateOfRecorded}%
+          </p>
+          <p className="mt-0.5 text-xs font-mono-num text-slate-500">
+            {stats.completedCount}/{stats.recordedCount} ngày có đặt mục tiêu
+          </p>
+        </div>
+      </div>
+
+      <div className="pt-4 space-y-4">
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between gap-2 text-xs">
+            <span className="font-medium text-slate-700">
+              Tiến độ hoàn thành theo tháng ({stats.monthLabel})
+            </span>
+            <span className="font-mono-num font-semibold text-teal-700">
+              {stats.completionRateOfMonth}%
+            </span>
+          </div>
+          <div
+            role="progressbar"
+            aria-label="Tỷ lệ ngày hoàn thành mục tiêu nhỏ trong tháng"
+            aria-valuenow={stats.completionRateOfMonth}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            className="h-2.5 w-full rounded-full bg-slate-100 overflow-hidden"
+          >
+            <div
+              className="h-full w-full origin-left rounded-full bg-teal-600 transition-transform duration-200 ease-out"
+              style={{ transform: `scaleX(${stats.completionRateOfMonth / 100})` }}
+            />
+          </div>
+        </div>
+
+        <div className="space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+            <p className="text-xs font-medium text-slate-600">
+              {viewMode === 'chart'
+                ? 'Biểu đồ mục tiêu nhỏ hoàn thành theo tuần trong tháng'
+                : 'Bản đồ hoàn thành theo từng ngày trong tháng'}
+            </p>
+
+            <div
+              role="group"
+              aria-label="Chế độ xem thống kê tháng"
+              className="inline-flex items-center gap-1 p-1 bg-slate-100 rounded-xl self-start sm:self-auto"
+            >
+              <button
+                type="button"
+                aria-pressed={viewMode === 'chart'}
+                onClick={() => setViewMode('chart')}
+                className={`min-h-[40px] px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap shrink-0 transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-teal-700 ${
+                  viewMode === 'chart'
+                    ? 'bg-white text-slate-900 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Biểu đồ tuần
+              </button>
+              <button
+                type="button"
+                aria-pressed={viewMode === 'grid'}
+                onClick={() => setViewMode('grid')}
+                className={`min-h-[40px] px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap shrink-0 transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-teal-700 ${
+                  viewMode === 'grid'
+                    ? 'bg-white text-slate-900 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Lưới từng ngày
+              </button>
+            </div>
+          </div>
+
+          {viewMode === 'chart' ? (
+            <div>
+              <div className="h-[180px] w-full">
+                <ResponsiveContainer width="100%" height={180} minWidth={0}>
+                  <BarChart
+                    data={stats.weeklyBreakdown}
+                    margin={{ top: 8, right: 8, left: -22, bottom: 0 }}
+                    barSize={26}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                    <XAxis
+                      dataKey="label"
+                      tick={{ fontSize: 12, fill: '#64748b' }}
+                      axisLine={false}
+                      tickLine={false}
+                    />
+                    <YAxis
+                      allowDecimals={false}
+                      domain={[0, 7]}
+                      tick={{ fontSize: 11, fill: '#64748b' }}
+                      axisLine={false}
+                      tickLine={false}
+                    />
+                    <Tooltip
+                      content={<MonthlyGoalChartTooltip />}
+                      cursor={{ fill: '#f8fafc' }}
+                    />
+                    <Bar
+                      dataKey="completedCount"
+                      name="Đã hoàn thành"
+                      stackId="goals"
+                      fill="#0d9488"
+                      radius={[6, 6, 0, 0]}
+                    />
+                    <Bar
+                      dataKey="pendingCount"
+                      name="Chưa hoàn thành"
+                      stackId="goals"
+                      fill="#fcd34d"
+                      radius={[6, 6, 0, 0]}
+                    />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+
+              <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-slate-600">
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 rounded-sm bg-teal-600 inline-block" aria-hidden="true" />
+                  <span>Đã hoàn thành (ngày)</span>
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <span
+                    className="w-2.5 h-2.5 rounded-sm bg-amber-300 inline-block"
+                    aria-hidden="true"
+                  />
+                  <span>Đã đặt nhưng chưa hoàn thành</span>
+                </span>
+              </div>
+            </div>
+          ) : (
+            <div>
+              <div
+                className="grid grid-cols-7 sm:grid-cols-10 gap-1.5"
+                aria-label={`Lưới tiến độ mục tiêu nhỏ ${stats.monthLabel}`}
+              >
+                {stats.dayCells.map((cell) => {
+                  const statusLabel =
+                    cell.status === 'completed'
+                      ? 'Đã hoàn thành'
+                      : cell.status === 'pending'
+                        ? 'Đã đặt nhưng chưa hoàn thành'
+                        : cell.status === 'future'
+                          ? 'Ngày sắp tới'
+                          : 'Chưa đặt mục tiêu';
+
+                  const tooltip = cell.title
+                    ? `Ngày ${formatDailyGoalDateLabel(cell.dateKey)}: ${cell.title} (${statusLabel})`
+                    : `Ngày ${formatDailyGoalDateLabel(cell.dateKey)}: ${statusLabel}`;
+
+                  let cellStyle = 'bg-slate-100 text-slate-500 border border-slate-200/60';
+                  if (cell.status === 'completed') {
+                    cellStyle = 'bg-teal-600 text-white border border-teal-700 font-semibold';
+                  } else if (cell.status === 'pending') {
+                    cellStyle = 'bg-amber-50 text-amber-900 border border-amber-300 font-medium';
+                  } else if (cell.status === 'future') {
+                    cellStyle = 'bg-slate-50 text-slate-300 border border-slate-100';
+                  }
+
+                  return (
+                    <div
+                      key={cell.dateKey}
+                      title={tooltip}
+                      aria-label={tooltip}
+                      className={`h-8 rounded-lg flex items-center justify-center text-[11px] font-mono-num select-none ${cellStyle}`}
+                    >
+                      {cell.dayNumber}
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-slate-600">
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 rounded-sm bg-teal-600 inline-block" aria-hidden="true" />
+                  <span>Hoàn thành</span>
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <span
+                    className="w-2.5 h-2.5 rounded-sm bg-amber-50 border border-amber-300 inline-block"
+                    aria-hidden="true"
+                  />
+                  <span>Chưa hoàn thành</span>
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <span
+                    className="w-2.5 h-2.5 rounded-sm bg-slate-100 border border-slate-200 inline-block"
+                    aria-hidden="true"
+                  />
+                  <span>Chưa đặt mục tiêu</span>
+                </span>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <p className="text-xs text-slate-600 leading-relaxed pt-1 border-t border-slate-100">
+          {momentumNote}
+        </p>
+      </div>
+    </section>
+  );
+}
+
 export function PlanTab({
   plan,
   planHistory,
@@ -796,20 +1254,31 @@ export function PlanTab({
   togglingDayIndex,
   aiConsent,
   dailyGoal,
+  monthlyDailyGoals,
+  allDailyGoals,
+  smartwatchConnection,
+  isSavingSmartwatch,
+  reminderTime,
   isSavingDailyGoal,
   isTogglingDailyGoal,
   onSaveDailyGoal,
   onToggleDailyGoal,
+  onSaveSmartwatchConnection,
   onGeneratePlan,
   onToggleDayComplete,
   onGoToProfile,
   onGoToGoal,
 }: PlanTabProps) {
   const [selectedDayIndex, setSelectedDayIndex] = useState<number>(1);
+  const [inspectedPlanId, setInspectedPlanId] = useState<number | null>(plan?.id ?? null);
 
   useEffect(() => {
     setSelectedDayIndex(1);
+    setInspectedPlanId(plan?.id ?? null);
   }, [plan?.id]);
+
+  const activePlan =
+    (inspectedPlanId != null ? planHistory.find((p) => p.id === inspectedPlanId) : null) ?? plan;
 
   if (!plan) {
     const canGenerate = Boolean(profile && goal && aiConsent);
@@ -822,6 +1291,8 @@ export function PlanTab({
           onSave={onSaveDailyGoal}
           onToggle={onToggleDailyGoal}
         />
+
+        <DisciplineStreakCounter goals={monthlyDailyGoals} />
 
         <div className="bg-white rounded-2xl border border-slate-200/90 p-6 sm:p-8 text-center">
           <div className="w-12 h-12 rounded-2xl bg-teal-50 text-teal-700 flex items-center justify-center mx-auto">
@@ -873,13 +1344,33 @@ export function PlanTab({
             )}
           </div>
         </div>
+
+        <SmartwatchSyncPanel
+          plan={null}
+          reminderTime={reminderTime}
+          connection={smartwatchConnection}
+          isSaving={isSavingSmartwatch}
+          onSaveConnection={onSaveSmartwatchConnection}
+        />
+
+        <MonthlyDailyGoalStats goals={monthlyDailyGoals} />
+
+        <PersonalArchiveExportPanel
+          allDailyGoals={allDailyGoals}
+          planHistory={planHistory}
+        />
       </div>
     );
   }
 
-  const days: WorkoutDay[] = Array.isArray(plan.scheduleJson) ? plan.scheduleJson : [];
+  const resolvedPlan = activePlan ?? plan;
+  const days: WorkoutDay[] = Array.isArray(resolvedPlan.scheduleJson)
+    ? resolvedPlan.scheduleJson
+    : [];
   const activeDay = days.find((d) => d.dayIndex === selectedDayIndex) ?? days[0];
-  const completedDays = Array.isArray(plan.completedDays) ? plan.completedDays : [];
+  const completedDays = Array.isArray(resolvedPlan.completedDays)
+    ? resolvedPlan.completedDays
+    : [];
   const completedDaysCount = days.filter((d) => completedDays.includes(d.dayIndex)).length;
   const totalDaysCount = days.length;
   const workoutDays = days.filter((d) => !d.isRestDay);
@@ -887,10 +1378,21 @@ export function PlanTab({
   const completedWorkoutsCount = workoutDays.filter((d) =>
     completedDays.includes(d.dayIndex)
   ).length;
+  const scheduledCalendarMap = new Map(
+    (resolvedPlan.strategyV2?.calendarContext.scheduledDays ?? []).map((item) => [
+      item.dayIndex,
+      item,
+    ])
+  );
+  const activeSports =
+    Array.isArray(resolvedPlan.sports) && resolvedPlan.sports.length > 0
+      ? resolvedPlan.sports
+      : [resolvedPlan.sport];
+  const sportsLabel = activeSports.map((s) => SPORT_LABELS[s]?.label ?? s).join(' + ');
 
   return (
     <div className="space-y-4">
-      {(plan.isSimulated || plan.aiProvider === 'mock') && (
+      {(resolvedPlan.isSimulated || resolvedPlan.aiProvider === 'mock') && (
         <section
           role="status"
           className="rounded-2xl border border-amber-300 bg-amber-50 p-4 text-xs sm:text-sm text-amber-950 leading-relaxed"
@@ -912,7 +1414,19 @@ export function PlanTab({
         onToggle={onToggleDailyGoal}
       />
 
-      {plan.cautiousMode ? (
+      <DisciplineStreakCounter goals={monthlyDailyGoals} />
+
+      <StrategyV2RoadmapPanel
+        plan={resolvedPlan}
+        planHistory={planHistory}
+        inspectedPlanId={resolvedPlan.id}
+        onSelectVersion={(planId) => {
+          setInspectedPlanId(planId);
+          setSelectedDayIndex(1);
+        }}
+      />
+
+      {resolvedPlan.cautiousMode ? (
         <section
           role="alert"
           className="rounded-2xl border border-rose-300 bg-rose-50 p-4 sm:p-5 text-rose-950"
@@ -925,14 +1439,15 @@ export function PlanTab({
                   Cảnh báo an toàn · Chế độ thận trọng đang bật
                 </h2>
               </div>
-              <p className="text-rose-900">{plan.safetyAlert}</p>
-              {Array.isArray(plan.cautionReasons) && plan.cautionReasons.length > 0 && (
-                <ul className="space-y-1 list-disc list-inside text-xs text-rose-800 pt-1 border-t border-rose-200/80">
-                  {plan.cautionReasons.map((reason) => (
-                    <li key={reason}>{reason}</li>
-                  ))}
-                </ul>
-              )}
+              <p className="text-rose-900">{resolvedPlan.safetyAlert}</p>
+              {Array.isArray(resolvedPlan.cautionReasons) &&
+                resolvedPlan.cautionReasons.length > 0 && (
+                  <ul className="space-y-1 list-disc list-inside text-xs text-rose-800 pt-1 border-t border-rose-200/80">
+                    {resolvedPlan.cautionReasons.map((reason) => (
+                      <li key={reason}>{reason}</li>
+                    ))}
+                  </ul>
+                )}
             </div>
           </div>
         </section>
@@ -941,7 +1456,7 @@ export function PlanTab({
           <ShieldCheck className="w-5 h-5 text-teal-700 shrink-0 mt-0.5" />
           <div className="text-xs sm:text-sm text-slate-700 leading-relaxed">
             <span className="font-semibold text-slate-900">Lưu ý an toàn Tuần 1: </span>
-            {plan.safetyAlert}
+            {resolvedPlan.safetyAlert}
           </div>
         </section>
       )}
@@ -950,11 +1465,13 @@ export function PlanTab({
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pb-4 border-b border-slate-100">
           <div>
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500">
-              <span>Tuần 1 / {plan.durationWeeks} tuần</span>
+              <span>Tuần 1 / {resolvedPlan.durationWeeks} tuần</span>
               <span aria-hidden="true">·</span>
-              <span>{SPORT_LABELS[plan.sport]?.label ?? plan.sport}</span>
+              <span className="font-mono-num">v{resolvedPlan.versionNumber ?? 1}</span>
               <span aria-hidden="true">·</span>
-              <span>{GOAL_LABELS[plan.goalType]?.label ?? plan.goalType}</span>
+              <span>{sportsLabel}</span>
+              <span aria-hidden="true">·</span>
+              <span>{GOAL_LABELS[resolvedPlan.goalType]?.label ?? resolvedPlan.goalType}</span>
             </div>
             <h1 className="text-lg sm:text-xl font-bold text-slate-900 tracking-tight mt-1">
               Chiến lược & Lịch tập Tuần 1
@@ -975,12 +1492,12 @@ export function PlanTab({
               className="min-h-[40px] px-3.5 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-800 text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors disabled:opacity-60 cursor-pointer"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${isGenerating ? 'animate-spin' : ''}`} />
-              <span>{isGenerating ? 'Đang tạo...' : 'Tạo lại'}</span>
+              <span>{isGenerating ? 'Đang tạo...' : 'Tạo phiên bản mới'}</span>
             </button>
           </div>
         </div>
 
-        <p className="mt-4 text-sm text-slate-700 leading-relaxed">{plan.strategySummary}</p>
+        <p className="mt-4 text-sm text-slate-700 leading-relaxed">{resolvedPlan.strategySummary}</p>
 
         <ProgressBar
           completedDaysCount={completedDaysCount}
@@ -989,9 +1506,9 @@ export function PlanTab({
           workoutDaysCount={workoutDaysCount}
         />
 
-        {Array.isArray(plan.coachPrinciples) && plan.coachPrinciples.length > 0 && (
+        {Array.isArray(resolvedPlan.coachPrinciples) && resolvedPlan.coachPrinciples.length > 0 && (
           <ul className="mt-4 pt-3 border-t border-slate-100 space-y-1.5 text-xs text-slate-600">
-            {plan.coachPrinciples.map((principle, idx) => (
+            {resolvedPlan.coachPrinciples.map((principle, idx) => (
               <li key={principle} className="flex items-start gap-2">
                 <span className="font-mono-num font-semibold text-teal-700 shrink-0">
                   0{idx + 1}.
@@ -1012,6 +1529,10 @@ export function PlanTab({
           const isSelected = activeDay?.dayIndex === day.dayIndex;
           const isDone = completedDays.includes(day.dayIndex);
           const shortLabel = SHORT_DAY_LABELS[idx] ?? `N${day.dayIndex}`;
+          const calendarMeta = scheduledCalendarMap.get(day.dayIndex);
+          const shortDate = calendarMeta?.dateKey
+            ? `${calendarMeta.dateKey.slice(8, 10)}/${calendarMeta.dateKey.slice(5, 7)}`
+            : null;
           return (
             <button
               key={day.dayIndex}
@@ -1019,13 +1540,22 @@ export function PlanTab({
               aria-selected={isSelected}
               type="button"
               onClick={() => setSelectedDayIndex(day.dayIndex)}
-              className={`min-h-[52px] rounded-xl flex flex-col items-center justify-center gap-0.5 text-xs font-semibold transition-all cursor-pointer focus-visible:outline-2 focus-visible:outline-teal-700 ${
+              className={`min-h-[58px] rounded-xl flex flex-col items-center justify-center gap-0.5 text-xs font-semibold transition-all cursor-pointer focus-visible:outline-2 focus-visible:outline-teal-700 ${
                 isSelected
                   ? 'bg-teal-700 text-white'
                   : 'bg-transparent text-slate-700 hover:bg-slate-100'
               }`}
             >
               <span>{shortLabel}</span>
+              {shortDate && (
+                <span
+                  className={`text-[10px] font-mono-num ${
+                    isSelected ? 'text-teal-100' : 'text-slate-400'
+                  }`}
+                >
+                  {shortDate}
+                </span>
+              )}
               <span
                 className={`text-[10px] font-medium ${
                   isSelected
@@ -1050,6 +1580,20 @@ export function PlanTab({
             <div>
               <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500">
                 <span className="font-semibold text-slate-800">{activeDay.dayLabel}</span>
+                {scheduledCalendarMap.get(activeDay.dayIndex)?.dateKey && (
+                  <>
+                    <span aria-hidden="true">·</span>
+                    <span className="font-mono-num">
+                      {formatDailyGoalDateLabel(
+                        scheduledCalendarMap.get(activeDay.dayIndex)!.dateKey
+                      )}
+                    </span>
+                    <span aria-hidden="true">·</span>
+                    <span className="font-mono-num">
+                      {scheduledCalendarMap.get(activeDay.dayIndex)!.timeWindow}
+                    </span>
+                  </>
+                )}
                 <span aria-hidden="true">·</span>
                 <span>{activeDay.isRestDay ? 'Ngày nghỉ phục hồi' : 'Ngày tập chính'}</span>
                 <span aria-hidden="true">·</span>
@@ -1067,7 +1611,7 @@ export function PlanTab({
             <button
               type="button"
               disabled={togglingDayIndex === activeDay.dayIndex}
-              onClick={() => onToggleDayComplete(plan.id, activeDay.dayIndex)}
+              onClick={() => onToggleDayComplete(resolvedPlan.id, activeDay.dayIndex)}
               className={`min-h-[44px] px-4 py-2 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 whitespace-nowrap shrink-0 transition-all cursor-pointer disabled:opacity-60 ${
                 completedDays.includes(activeDay.dayIndex)
                   ? 'bg-teal-50 text-teal-800 border border-teal-300'
@@ -1155,7 +1699,22 @@ export function PlanTab({
         </section>
       )}
 
+      <SmartwatchSyncPanel
+        plan={plan}
+        reminderTime={reminderTime}
+        connection={smartwatchConnection}
+        isSaving={isSavingSmartwatch}
+        onSaveConnection={onSaveSmartwatchConnection}
+      />
+
       <WorkoutHistoryTable plans={planHistory} />
+
+      <MonthlyDailyGoalStats goals={monthlyDailyGoals} />
+
+      <PersonalArchiveExportPanel
+        allDailyGoals={allDailyGoals}
+        planHistory={planHistory}
+      />
     </div>
   );
 }

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { onAuthStateChanged, signInWithPopup, signOut, type User } from 'firebase/auth';
-import { Bell, CalendarDays, LogOut, Target, UserRound } from 'lucide-react';
+import { Bell, CalendarDays, Compass, LogOut, Target, UserRound } from 'lucide-react';
 import { auth, googleAuthProvider } from './lib/firebase.ts';
 import {
   getBrowserTimezone,
@@ -19,10 +19,13 @@ import {
 } from './lib/firestoreReminder.ts';
 import { firestoreClientRepository } from './repositories/firestoreClientRepository.ts';
 import { getTodayDateKey, type DailyGoalData } from './lib/dailyGoal.ts';
+import type { SmartwatchConnectionData } from './lib/smartwatch.ts';
 import { AuthGate } from './components/AuthGate.tsx';
+import { TodayTab } from './components/TodayTab.tsx';
 import { ProfileTab } from './components/ProfileTab.tsx';
 import { GoalTab } from './components/GoalTab.tsx';
 import { PlanTab } from './components/PlanTab.tsx';
+import { buildDefaultGoalForSprint2 } from './services/strategyEngineV2.ts';
 import {
   CONSENT_POLICY_VERSION,
   evaluateSafetyProfile,
@@ -32,7 +35,7 @@ import {
   type WorkoutPlanData,
 } from './shared/types.ts';
 
-type AppTab = 'profile' | 'goal' | 'plan';
+type AppTab = 'today' | 'plan' | 'goal' | 'profile';
 
 const HERO_IMAGE_PATH = '/src/assets/images/coach_hero_athlete_1795513970914.jpg';
 
@@ -48,11 +51,11 @@ const DEFAULT_PROFILE: ProfileData = {
   healthNotes: '',
 };
 
-const DEFAULT_GOAL: GoalData = {
+const DEFAULT_GOAL: GoalData = buildDefaultGoalForSprint2({
   sport: 'home_workout',
   goalType: 'weight_loss',
   durationWeeks: 8,
-};
+});
 
 const DEFAULT_CONSENT: ConsentRecord = {
   policyVersion: CONSENT_POLICY_VERSION,
@@ -85,7 +88,7 @@ export default function App() {
   const [isSigningIn, setIsSigningIn] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
 
-  const [activeTab, setActiveTab] = useState<AppTab>('profile');
+  const [activeTab, setActiveTab] = useState<AppTab>('today');
   const [isBootstrapping, setIsBootstrapping] = useState(false);
 
   const [savedProfile, setSavedProfile] = useState<ProfileData | null>(null);
@@ -93,6 +96,7 @@ export default function App() {
 
   const [savedGoal, setSavedGoal] = useState<GoalData | null>(null);
   const [goalForm, setGoalForm] = useState<GoalData>(DEFAULT_GOAL);
+  const [revisionReason, setRevisionReason] = useState<string>('');
 
   const [latestPlan, setLatestPlan] = useState<WorkoutPlanData | null>(null);
   const [planHistory, setPlanHistory] = useState<WorkoutPlanData[]>([]);
@@ -100,6 +104,11 @@ export default function App() {
   const [isSavingConsent, setIsSavingConsent] = useState(false);
 
   const [dailyGoal, setDailyGoal] = useState<DailyGoalData | null>(null);
+  const [monthlyDailyGoals, setMonthlyDailyGoals] = useState<DailyGoalData[]>([]);
+  const [allDailyGoals, setAllDailyGoals] = useState<DailyGoalData[]>([]);
+  const [smartwatchConnection, setSmartwatchConnection] =
+    useState<SmartwatchConnectionData | null>(null);
+  const [isSavingSmartwatch, setIsSavingSmartwatch] = useState(false);
   const [isSavingDailyGoal, setIsSavingDailyGoal] = useState(false);
   const [isTogglingDailyGoal, setIsTogglingDailyGoal] = useState(false);
 
@@ -159,12 +168,15 @@ export default function App() {
       }
 
       setConsent(data.consent ?? DEFAULT_CONSENT);
+      setSmartwatchConnection(data.smartwatchConnection ?? null);
       setLatestPlan(data.latestPlan ?? null);
       setPlanHistory(data.allPlans ?? []);
       setDailyGoal(data.todayDailyGoal ?? null);
+      setMonthlyDailyGoals(data.monthlyDailyGoals ?? []);
+      setAllDailyGoals(data.allDailyGoals ?? []);
 
       if (data.latestPlan) {
-        setActiveTab('plan');
+        setActiveTab('today');
       } else if (data.profile) {
         setActiveTab('goal');
       } else {
@@ -223,6 +235,9 @@ export default function App() {
         setLatestPlan(null);
         setPlanHistory([]);
         setDailyGoal(null);
+        setMonthlyDailyGoals([]);
+        setAllDailyGoals([]);
+        setSmartwatchConnection(null);
         setSavedReminder(null);
         setReminderForm({
           ...DEFAULT_REMINDER_SETTINGS,
@@ -320,7 +335,13 @@ export default function App() {
     return (
       savedGoal.sport !== goalForm.sport ||
       savedGoal.goalType !== goalForm.goalType ||
-      savedGoal.durationWeeks !== goalForm.durationWeeks
+      savedGoal.durationWeeks !== goalForm.durationWeeks ||
+      JSON.stringify(savedGoal.sports ?? [savedGoal.sport]) !==
+        JSON.stringify(goalForm.sports ?? [goalForm.sport]) ||
+      JSON.stringify(savedGoal.measurableGoal ?? null) !==
+        JSON.stringify(goalForm.measurableGoal ?? null) ||
+      JSON.stringify(savedGoal.schedulePreferences ?? null) !==
+        JSON.stringify(goalForm.schedulePreferences ?? null)
     );
   }, [savedGoal, goalForm]);
 
@@ -552,6 +573,14 @@ export default function App() {
         if (!currentGoal) return;
       }
 
+      const nextVersionNumber = planHistory.length + 1;
+      const parentPlanId = latestPlan?.id ?? null;
+      const effectiveRevisionReason =
+        revisionReason.trim() ||
+        (nextVersionNumber === 1
+          ? 'Khởi tạo chiến lược kỷ luật đầu tiên'
+          : `Cập nhật chiến lược phiên bản v${nextVersionNumber}`);
+
       const res = await apiFetch<{ plan: WorkoutPlanData }>('/api/plans/generate', firebaseUser, {
         method: 'POST',
         body: JSON.stringify({
@@ -561,27 +590,33 @@ export default function App() {
           consentPolicyVersion: consent.policyVersion || CONSENT_POLICY_VERSION,
           profile: currentProfile,
           goal: currentGoal,
+          versionNumber: nextVersionNumber,
+          parentPlanId,
+          revisionReason: effectiveRevisionReason,
         }),
       });
 
-      const persistedPlan = await firestoreClientRepository.saveWorkoutPlan(
-        firebaseUser.uid,
-        res.plan
-      );
+      const persistedPlan = await firestoreClientRepository.saveWorkoutPlan(firebaseUser.uid, {
+        ...res.plan,
+        versionNumber: res.plan.versionNumber ?? nextVersionNumber,
+        parentPlanId: res.plan.parentPlanId ?? parentPlanId,
+        revisionReason: res.plan.revisionReason || effectiveRevisionReason,
+      });
       setLatestPlan(persistedPlan);
       setPlanHistory((prev) => [persistedPlan, ...prev.filter((p) => p.id !== persistedPlan.id)]);
-      setActiveTab('plan');
+      setRevisionReason('');
+      setActiveTab('today');
       setFeedback({
         type: 'success',
         message: persistedPlan.cautiousMode
-          ? 'Đã tạo lịch tập Tuần 1 theo Chế độ thận trọng và lưu vào Firebase.'
-          : 'Đã tạo và lưu lịch tập Tuần 1 vào Firebase thành công.',
+          ? `Đã tạo chiến lược v${persistedPlan.versionNumber ?? nextVersionNumber} theo Chế độ thận trọng và lưu vào Firebase.`
+          : `Đã tạo và lưu chiến lược v${persistedPlan.versionNumber ?? nextVersionNumber} vào Firebase thành công.`,
       });
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch (error) {
       setFeedback({
         type: 'error',
-        message: extractErrorMessage(error, 'Không thể tạo lịch tập Tuần 1.'),
+        message: extractErrorMessage(error, 'Không thể tạo chiến lược tập luyện.'),
       });
     } finally {
       setIsGeneratingPlan(false);
@@ -589,16 +624,23 @@ export default function App() {
   };
 
   const handleToggleDayComplete = async (planId: number, dayIndex: number) => {
-    if (!firebaseUser || !latestPlan || latestPlan.id !== planId) return;
+    if (!firebaseUser) return;
+    const targetPlan =
+      (latestPlan && latestPlan.id === planId ? latestPlan : null) ??
+      planHistory.find((p) => p.id === planId) ??
+      null;
+    if (!targetPlan) return;
     setTogglingDayIndex(dayIndex);
     setFeedback(null);
     try {
       const updated = await firestoreClientRepository.togglePlanDay(
         firebaseUser.uid,
-        latestPlan,
+        targetPlan,
         dayIndex
       );
-      setLatestPlan(updated);
+      if (latestPlan?.id === updated.id) {
+        setLatestPlan(updated);
+      }
       setPlanHistory((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
     } catch (error) {
       setFeedback({
@@ -626,6 +668,16 @@ export default function App() {
         completed: preserveCompleted,
       });
       setDailyGoal(saved);
+      setMonthlyDailyGoals((prev) =>
+        [...prev.filter((g) => g.dateKey !== saved.dateKey), saved].sort((a, b) =>
+          a.dateKey.localeCompare(b.dateKey)
+        )
+      );
+      setAllDailyGoals((prev) =>
+        [...prev.filter((g) => g.dateKey !== saved.dateKey), saved].sort((a, b) =>
+          b.dateKey.localeCompare(a.dateKey)
+        )
+      );
       setFeedback({
         type: 'success',
         message: 'Đã lưu mục tiêu nhỏ hôm nay vào Firebase.',
@@ -649,6 +701,16 @@ export default function App() {
     try {
       const updated = await firestoreClientRepository.toggleDailyGoal(firebaseUser.uid, dailyGoal);
       setDailyGoal(updated);
+      setMonthlyDailyGoals((prev) =>
+        [...prev.filter((g) => g.dateKey !== updated.dateKey), updated].sort((a, b) =>
+          a.dateKey.localeCompare(b.dateKey)
+        )
+      );
+      setAllDailyGoals((prev) =>
+        [...prev.filter((g) => g.dateKey !== updated.dateKey), updated].sort((a, b) =>
+          b.dateKey.localeCompare(a.dateKey)
+        )
+      );
       setFeedback({
         type: 'success',
         message: updated.completed
@@ -662,6 +724,32 @@ export default function App() {
       });
     } finally {
       setIsTogglingDailyGoal(false);
+    }
+  };
+
+  const handleSaveSmartwatchConnection = async (
+    input: Partial<SmartwatchConnectionData>
+  ): Promise<boolean> => {
+    if (!firebaseUser) return false;
+    setIsSavingSmartwatch(true);
+    try {
+      const saved = await firestoreClientRepository.saveSmartwatchConnection(
+        firebaseUser.uid,
+        input
+      );
+      setSmartwatchConnection(saved);
+      return true;
+    } catch (error) {
+      setFeedback({
+        type: 'error',
+        message: extractErrorMessage(
+          error,
+          'Không thể lưu cấu hình đồng hồ thông minh vào Firebase.'
+        ),
+      });
+      return false;
+    } finally {
+      setIsSavingSmartwatch(false);
     }
   };
 
@@ -695,14 +783,25 @@ export default function App() {
           <nav className="hidden md:flex items-center gap-6 text-sm font-medium">
             <button
               type="button"
-              onClick={() => setActiveTab('profile')}
+              onClick={() => setActiveTab('today')}
               className={`whitespace-nowrap shrink-0 py-1 border-b-2 transition-colors cursor-pointer ${
-                activeTab === 'profile'
+                activeTab === 'today'
                   ? 'border-teal-700 text-teal-800 font-semibold'
                   : 'border-transparent text-slate-600 hover:text-slate-900'
               }`}
             >
-              Hồ sơ
+              Hôm nay
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('plan')}
+              className={`whitespace-nowrap shrink-0 py-1 border-b-2 transition-colors cursor-pointer ${
+                activeTab === 'plan'
+                  ? 'border-teal-700 text-teal-800 font-semibold'
+                  : 'border-transparent text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              Lịch & Chiến lược
             </button>
             <button
               type="button"
@@ -717,14 +816,14 @@ export default function App() {
             </button>
             <button
               type="button"
-              onClick={() => setActiveTab('plan')}
+              onClick={() => setActiveTab('profile')}
               className={`whitespace-nowrap shrink-0 py-1 border-b-2 transition-colors cursor-pointer ${
-                activeTab === 'plan'
+                activeTab === 'profile'
                   ? 'border-teal-700 text-teal-800 font-semibold'
                   : 'border-transparent text-slate-600 hover:text-slate-900'
               }`}
             >
-              Lịch tập tuần
+              Hồ sơ
             </button>
           </nav>
 
@@ -787,6 +886,31 @@ export default function App() {
           </div>
         ) : (
           <>
+            {activeTab === 'today' && (
+              <TodayTab
+                uid={firebaseUser.uid}
+                plan={latestPlan}
+                planHistory={planHistory}
+                profile={savedProfile}
+                goal={savedGoal}
+                aiConsent={isConsentCompleteForProfile}
+                isGenerating={isGeneratingPlan}
+                togglingDayIndex={togglingDayIndex}
+                dailyGoal={dailyGoal}
+                monthlyDailyGoals={monthlyDailyGoals}
+                allDailyGoals={allDailyGoals}
+                isSavingDailyGoal={isSavingDailyGoal}
+                isTogglingDailyGoal={isTogglingDailyGoal}
+                onSaveDailyGoal={handleSaveDailyGoal}
+                onToggleDailyGoal={handleToggleDailyGoal}
+                onGeneratePlan={handleGeneratePlan}
+                onToggleDayComplete={handleToggleDayComplete}
+                onGoToPlan={() => setActiveTab('plan')}
+                onGoToGoal={() => setActiveTab('goal')}
+                onGoToProfile={() => setActiveTab('profile')}
+              />
+            )}
+
             {activeTab === 'profile' && (
               <ProfileTab
                 form={profileForm}
@@ -814,6 +938,10 @@ export default function App() {
               <GoalTab
                 form={goalForm}
                 profile={savedProfile}
+                planHistory={planHistory}
+                allDailyGoals={allDailyGoals}
+                revisionReason={revisionReason}
+                onRevisionReasonChange={setRevisionReason}
                 onChange={setGoalForm}
                 onSaveGoal={async () => {
                   await saveGoalInternal();
@@ -826,6 +954,7 @@ export default function App() {
                 isSavingConsent={isSavingConsent}
                 onUpdateConsent={handleUpdateConsent}
                 onGoToProfile={() => setActiveTab('profile')}
+                onGoToPlan={() => setActiveTab('plan')}
                 hasUnsavedChanges={hasUnsavedGoal}
                 lastSavedAt={savedGoal?.updatedAt}
               />
@@ -841,10 +970,16 @@ export default function App() {
                 togglingDayIndex={togglingDayIndex}
                 aiConsent={isConsentCompleteForProfile}
                 dailyGoal={dailyGoal}
+                monthlyDailyGoals={monthlyDailyGoals}
+                allDailyGoals={allDailyGoals}
+                smartwatchConnection={smartwatchConnection}
+                isSavingSmartwatch={isSavingSmartwatch}
+                reminderTime={savedReminder?.reminderTime ?? reminderForm.reminderTime}
                 isSavingDailyGoal={isSavingDailyGoal}
                 isTogglingDailyGoal={isTogglingDailyGoal}
                 onSaveDailyGoal={handleSaveDailyGoal}
                 onToggleDailyGoal={handleToggleDailyGoal}
+                onSaveSmartwatchConnection={handleSaveSmartwatchConnection}
                 onGeneratePlan={handleGeneratePlan}
                 onToggleDayComplete={handleToggleDayComplete}
                 onGoToProfile={() => setActiveTab('profile')}
@@ -859,17 +994,30 @@ export default function App() {
         aria-label="Điều hướng chính"
         className="fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-slate-200 pb-safe"
       >
-        <div className="max-w-4xl mx-auto grid grid-cols-3 h-16">
+        <div className="max-w-4xl mx-auto grid grid-cols-4 h-16">
           <button
             type="button"
-            onClick={() => setActiveTab('profile')}
+            onClick={() => setActiveTab('today')}
             className={`min-h-[44px] flex flex-col items-center justify-center gap-1 transition-colors cursor-pointer ${
-              activeTab === 'profile' ? 'text-teal-700' : 'text-slate-500 hover:text-slate-800'
+              activeTab === 'today' ? 'text-teal-700' : 'text-slate-500 hover:text-slate-800'
             }`}
           >
-            <UserRound className="w-5 h-5" strokeWidth={activeTab === 'profile' ? 2.4 : 1.8} />
+            <Compass className="w-5 h-5" strokeWidth={activeTab === 'today' ? 2.4 : 1.8} />
             <span className="text-[11px] font-semibold tracking-tight whitespace-nowrap">
-              Hồ sơ
+              Hôm nay
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('plan')}
+            className={`min-h-[44px] flex flex-col items-center justify-center gap-1 transition-colors cursor-pointer ${
+              activeTab === 'plan' ? 'text-teal-700' : 'text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            <CalendarDays className="w-5 h-5" strokeWidth={activeTab === 'plan' ? 2.4 : 1.8} />
+            <span className="text-[11px] font-semibold tracking-tight whitespace-nowrap">
+              Chiến lược
             </span>
           </button>
 
@@ -888,14 +1036,14 @@ export default function App() {
 
           <button
             type="button"
-            onClick={() => setActiveTab('plan')}
+            onClick={() => setActiveTab('profile')}
             className={`min-h-[44px] flex flex-col items-center justify-center gap-1 transition-colors cursor-pointer ${
-              activeTab === 'plan' ? 'text-teal-700' : 'text-slate-500 hover:text-slate-800'
+              activeTab === 'profile' ? 'text-teal-700' : 'text-slate-500 hover:text-slate-800'
             }`}
           >
-            <CalendarDays className="w-5 h-5" strokeWidth={activeTab === 'plan' ? 2.4 : 1.8} />
+            <UserRound className="w-5 h-5" strokeWidth={activeTab === 'profile' ? 2.4 : 1.8} />
             <span className="text-[11px] font-semibold tracking-tight whitespace-nowrap">
-              Lịch tập tuần
+              Hồ sơ
             </span>
           </button>
         </div>

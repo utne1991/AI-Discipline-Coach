@@ -13,6 +13,7 @@
     "lint": "tsc --noEmit",
     "lint:rules": "eslint firestore.rules",
     "test": "tsx --test tests/*.test.ts",
+    "test:rules:emulator": "tsx --test tests/firestoreRules.emulator.ts",
     "db:generate": "drizzle-kit generate --config=./src/db/drizzle.config.ts",
     "db:migrate": "drizzle-kit migrate --config=./src/db/drizzle.config.ts",
     "db:push": "drizzle-kit push --config=./src/db/drizzle.config.ts"

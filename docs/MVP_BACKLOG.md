@@ -1,21 +1,35 @@
-# MVP Backlog & Trạng thái Sprint 01
+# MVP Backlog & Trạng thái Triển khai (Sprint 01.1 & Sprint 02)
 
-## Sprint 01 — Audit, Repair & Foundation
+## Cổng 1 — Sprint 01.1 Development Gate
 
-| ID | Hạng mục | Mức độ | Trạng thái | Ghi chú thực tế |
+| ID | Hạng mục | Ưu tiên | Trạng thái | Ghi chú thực tế |
 |---|---|---|---|---|
-| S1-01 | Kiểm toán toàn bộ kiến trúc React/Express/Drizzle/Firebase/Gemini | P0 | Hoàn thành | Ghi nhận đầy đủ tại `docs/AUDIT_REPORT.md` |
-| S1-02 | Tách Express App Factory & hardening API (`createApp.ts`) | P0 | Hoàn thành | Bổ sung header bảo mật, JSON 404/400 handler, `GET /api/plans/:planId` |
-| S1-03 | Xây dựng AI Strategy Validator độc lập | P0 | Hoàn thành | `src/services/strategyValidator.ts` + tích hợp retry/reject `422` |
-| S1-04 | Sửa phân loại BMI & an toàn theo nhóm tuổi (`<18` không dùng ngưỡng người lớn) | P0 | Hoàn thành | `evaluateBmi` và `evaluateCautionStatus` trong `src/shared/types.ts` |
-| S1-05 | Cơ chế xác nhận đồng ý trước khi gửi dữ liệu sức khỏe sang AI | P1 | Hoàn thành | Checkbox đồng ý ở `GoalTab.tsx` + kiểm tra `aiConsent: true` ở API |
-| S1-06 | Tạo file migration SQL Drizzle (`drizzle/0000_*.sql`) | P1 | Hoàn thành | Sinh thành công từ `src/db/schema.ts` |
-| S1-07 | Bộ kiểm thử tự động (Unit + HTTP Integration) | P0 | Hoàn thành | 15/15 bài test pass qua `npm test` |
-| S1-08 | Báo cáo kiến trúc Capacitor Android/iOS | P2 | Hoàn thành | Ghi nhận tại mục 4 của `docs/ARCHITECTURE.md` |
-| S1-09 | Kiểm thử thực tế Cloud SQL & E2E trên trình duyệt với tài khoản Google thật | P0 | **BLOCKED** | Bị chặn bởi lệch project Cloud SQL (`emerald-water-402004` vs `gen-lang-client-0979661187`), thiếu `GEMINI_API_KEY` trong shell, và không có headless browser/OAuth session tự động |
-| S1-10 | Tạo nhánh Sprint 01 trên GitHub & mở Pull Request | P1 | **BLOCKED** | Thư mục làm việc không có `.git` và không có kết nối/credential GitHub CLI |
+| S01.1-CI | Sửa lỗi GitHub Actions Secret hygiene check tự khớp regex của chính nó | P0 | **PASS** | Đã sửa tại `.github/workflows/ci.yml` bằng character-class regex; chạy kiểm chứng exit 0, 0 false positive |
+| S01.1-REPO | Hoàn thiện Repository Interface, Firestore Adapter, PostgreSQL Adapter & Contract Tests | P0 | **PASS** | `src/repositories/{types,memoryRepository,postgresRepository,firestoreClientRepository}.ts` + `tests/repositoryContract.test.ts` |
+| S01.1-RULES | Hardening Firestore Security Rules & bài kiểm thử đa tài khoản Emulator | P0 | **PASS (Rules + Audit + Spec)** / **BLOCKED (Live JVM Emulator)** | `firestore.rules` + `firebase.json` + `tests/firestoreRulesAudit.test.ts` + `tests/firestoreRules.emulator.ts` (đã deploy DEV & lint 0 lỗi; sandbox không có `java` để chạy JVM Emulator trực tiếp) |
+| S01.1-SAFETY | Hoàn thiện AI Safety Validator, giới hạn tải tập, an toàn nhóm tuổi `<18` & y khoa | P0 | **PASS** | `src/shared/types.ts`, `src/services/strategyValidator.ts`, `tests/bmiAndSafety.test.ts`, `tests/strategyValidator.test.ts` |
+| S01.1-PII | Loại bỏ họ tên / PII khỏi AI payload & quản lý sự đồng ý có phiên bản | P0 | **PASS** | `src/services/aiPayload.ts`, `tests/aiPayloadAndEnv.test.ts`, Firestore `appData/consent` |
+| S01.1-TRACKER | Sửa diễn giải Progress Tracker (chỉ ghi nhận check-in theo ngày) | P0 | **PASS** | `trackingGranularity: 'day_checkin_only'`, `exerciseCompletionTracked: false` trong `src/components/PlanTab.tsx` + `tests/progressTracker.test.ts` |
+| S01.1-DOCS | Hoàn thiện `.env.example`, `README.md`, `AGENTS.md`, `ARCHITECTURE.md`, `MVP_BACKLOG.md`, `ACCEPTANCE_TESTS.md` | P1 | **PASS** | Đã đồng bộ theo mã nguồn thực tế |
+| S01.1-GIT | Tạo nhánh riêng, commit, push và mở Pull Request trên GitHub | P1 | **BLOCKED** | Môi trường sandbox không có `.git` và không có credential GitHub CLI |
 
-## Sprint 02 — Goal & Strategy Engine v2 (Đề xuất sau khi nghiệm thu Sprint 01)
-- Khắc phục triệt để kết nối Cloud SQL trên đúng project và chạy kiểm thử E2E thật.
-- Bổ sung theo dõi tuần tiếp theo (Tuần 2–12) dựa trên tỷ lệ hoàn thành và RPE phản hồi.
-- Lưu lịch sử các tuần và biểu đồ chuỗi ngày kỷ luật.
+## Cổng 2 — Production Gate (Tài khoản B)
+
+| Hạng mục | Trạng thái | Ghi chú |
+|---|---|---|
+| Cloud SQL PostgreSQL chính thức, Firebase Auth/OAuth production, Gemini API production (Account B) | **DEFERRED — OWNER APPROVED** | Chủ dự án quyết định hoàn thiện toàn bộ MVP trước khi kết nối hạ tầng production Account B; không yêu cầu token/API key hay dữ liệu khách hàng thật trong giai đoạn phát triển |
+
+## Sprint 02 — Goal & Strategy Engine v2 + Màn hình Hôm nay
+
+| ID | Hạng mục | Ưu tiên | Trạng thái | Tệp triển khai & Kiểm chứng |
+|---|---|---|---|---|
+| S02-01 | Mục tiêu cá nhân đo lường được (`MeasurableGoalSpec`) | P0 | **PASS** | `src/shared/types.ts`, `src/services/strategyEngineV2.ts`, `src/components/GoalTab.tsx` |
+| S02-02 | Đánh giá năng lực hiện tại & tính khả thi mục tiêu độc lập với AI | P0 | **PASS** | `assessGoalFeasibility()` trong `src/services/strategyEngineV2.ts`, hiển thị trực tiếp tại `GoalTab.tsx`, test tốc độ giảm cân quá dốc tại `tests/strategyEngineV2.test.ts` |
+| S02-03 | Cho phép lựa chọn nhiều môn thể thao (1–3 môn) | P0 | **PASS** | `GoalData.sports`, `WorkoutPlanData.sports`, `GoalTab.tsx`, `aiStrategy.ts`, `firestoreAppStore.ts`, `firestore.rules` |
+| S02-04 | Chiến lược toàn thời hạn chia thành từng giai đoạn liên tục & cột mốc đo lường | P0 | **PASS** | `buildMultiPhaseRoadmap()` + `StrategyV2RoadmapPanel.tsx` |
+| S02-05 | Tính khối lượng tập luyện theo từng môn bị chặn trần bởi giới hạn an toàn | P0 | **PASS** | `calculateSportVolumeAllocation()` + kiểm chứng trần tải trong `validateStrategyV2Blueprint()` |
+| S02-06 | Lịch tập theo ngày thực tế (`YYYY-MM-DD`), múi giờ và khung giờ rảnh | P0 | **PASS** | `buildCalendarScheduleContext()`, `resolveTodayScheduledDay()`, hiển thị tại `TodayTab.tsx` & `PlanTab.tsx` |
+| S02-07 | Quản lý phiên bản kế hoạch & lịch sử thay đổi (`v1`, `v2`, `parentPlanId`, `revisionReason`) | P0 | **PASS** | `createApp.ts`, `firestoreAppStore.ts`, `App.tsx`, bộ chọn phiên bản tại `StrategyV2RoadmapPanel.tsx` |
+| S02-08 | Sinh nhiệm vụ hằng ngày từ chiến lược & trả lời đủ 8 câu hỏi AI Agent | P0 | **PASS** | `generateDailyStrategyTasks()`, `buildStrategyV2Blueprint()`, `aiStrategy.ts` |
+| S02-09 | Bộ quy tắc an toàn độc lập với AI cho Strategy v2 | P0 | **PASS** | `validateStrategyV2Blueprint()` trong `src/services/strategyValidator.ts` + test kiểm thử phá vỡ tại `tests/strategyEngineV2.test.ts` |
+| S02-10 | Màn hình **Hôm nay** (`TodayTab`) làm dashboard trung tâm | P0 | **PASS** | `src/components/TodayTab.tsx` + điều hướng 4 tab tại `src/App.tsx` |

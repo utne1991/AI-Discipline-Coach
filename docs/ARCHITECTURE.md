@@ -1,54 +1,60 @@
-# Kiến trúc hệ thống & Đánh giá Capacitor (Sprint 01)
+# Kiến trúc hệ thống — AI Discipline Coach (Sprint 01.1 & Sprint 02)
 
-## 1. Tổng quan kiến trúc Web Full-Stack
+## 1. Tổng quan kiến trúc tách Provider & Môi trường
 
 ```text
 [React 19 + Vite + Tailwind v4 SPA]
-        │  HTTPS + Firebase ID Token (Bearer)
-        ▼
-[Express.js Server (server.ts -> src/server/createApp.ts)]
-   ├── Middleware xác thực (src/middleware/auth.ts / Firebase Admin verifyIdToken)
-   ├── Kiểm tra dữ liệu đầu vào & aiConsent (validateProfilePayload, validateGoalPayload)
-   ├── AI Strategy Engine (src/services/aiStrategy.ts -> @google/genai gemini-4-hydrogen)
-   │      └── Bộ kiểm định độc lập (src/services/strategyValidator.ts)
-   └── Tầng dữ liệu Drizzle ORM (src/db/repository.ts + src/db/schema.ts)
-          │  pg.Pool (Unix Socket SQL_HOST)
+   ├── Navigation: Hôm nay (Central) | Chiến lược | Mục tiêu | Hồ sơ
+   ├── Client Data Repository (DEV/MVP Primary: Firestore)
+   │      └── FirestoreClientRepository -> src/lib/firestoreAppStore.ts
+   │             └── Protected by hardened firestore.rules (email_verified + uid isolation)
+   │
+   └── HTTPS + Firebase ID Token (Bearer)
           ▼
-[Cloud SQL for PostgreSQL]
+[Express.js Server (server.ts -> src/server/createApp.ts)]
+   ├── Auth Middleware (verifyIdToken) & Env Guard (APP_ENV / DATA_PROVIDER / AI_PROVIDER)
+   ├── Consent & Input Validation (validateProfilePayload, validateGoalPayload)
+   ├── AI Payload Minimizer (src/services/aiPayload.ts — Zero PII)
+   ├── Goal & Strategy Engine v2 (src/services/strategyEngineV2.ts)
+   │      ├── Feasibility Assessment (AI-independent)
+   │      ├── Multi-sport Volume Allocation (bounded by SafetyProfile.loadLimits)
+   │      ├── Multi-phase Roadmap & Measurable Milestones (Week 1..N)
+   │      └── Real-Calendar Mapping (YYYY-MM-DD, timezone, free-time slot) + Daily Tasks
+   ├── AI Orchestrator (src/services/aiStrategy.ts -> @google/genai | DEV mock)
+   │      └── Independent Safety Rulebook (src/services/strategyValidator.ts)
+   │             ├── validateWeekOneStrategy()
+   │             └── validateStrategyV2Blueprint()
+   └── Server Repository Interface (src/repositories/types.ts)
+          ├── PostgresRepository (src/repositories/postgresRepository.ts -> Drizzle ORM)
+          └── MemoryRepository (src/repositories/memoryRepository.ts -> Automated tests)
 ```
 
-## 2. Cấu trúc thư mục chính
+## 2. Nguyên tắc tách biệt nguồn dữ liệu & AI
 
-- `src/App.tsx`: Điều phối xác thực Firebase (`onAuthStateChanged`, `signInWithPopup`), trạng thái bootstrap và thanh điều hướng dưới cùng (`Hồ sơ | Mục tiêu | Lịch tập tuần`).
-- `src/components/`: `AuthGate.tsx`, `ProfileTab.tsx`, `GoalTab.tsx`, `PlanTab.tsx`.
-- `src/shared/types.ts`: Kiểu dữ liệu dùng chung, nhãn tiếng Việt, `evaluateBmi` (tách biệt trẻ em/vị thành niên với người lớn), `evaluateCautionStatus`.
-- `src/server/createApp.ts`: Express app factory có dependency injection phục vụ kiểm thử HTTP tự động.
-- `src/services/aiStrategy.ts`: Gọi `@google/genai` trên server với `responseSchema` và cơ chế thử lại kèm phản hồi lỗi từ validator.
-- `src/services/strategyValidator.ts`: Bộ kiểm định an toàn và cấu trúc độc lập với Gemini.
-- `src/db/schema.ts`, `src/db/index.ts`, `src/db/repository.ts`, `src/db/drizzle.config.ts`, `drizzle/0000_panoramic_sebastian_shaw.sql`: Định nghĩa schema, connection pool và migration SQL.
+- **Một nguồn dữ liệu chính cho mỗi môi trường (`DATA_PROVIDER`)**:
+  - DEV/MVP trên AI Studio: Firestore (Account A DEV) cho toàn bộ trạng thái người dùng (`profile`, `goal`, `consent`, `smartwatch`, `plans`, `dailyGoals`), kết hợp backend Express stateless để sinh và kiểm định chiến lược AI.
+  - Staging/Production với PostgreSQL/Cloud SQL (Account B — hiện ở trạng thái **DEFERRED — OWNER APPROVED**): sử dụng `PostgresRepository` + migration Drizzle (`drizzle/0000_panoramic_sebastian_shaw.sql`).
+- **Tách Business Logic khỏi AI Provider (`AI_PROVIDER`)**:
+  - `mock`: Dùng cho phát triển/kiểm thử không phụ thuộc quota Gemini; luôn gắn `aiProvider: 'mock'`, `isSimulated: true` và hiển thị thông báo rõ ràng trên UI.
+  - `gemini`: Chạy trên server với `GEMINI_API_KEY`; nếu lỗi kết nối trong `production`, API trả lỗi tường minh (không fallback âm thầm sang `mock`).
 
-## 3. Lược đồ cơ sở dữ liệu PostgreSQL
+## 3. Cấu trúc mã nguồn cốt lõi
 
-- `users` (`id`, `uid` UNIQUE, `email`, `display_name`, `created_at`, `updated_at`)
-- `user_profiles` (`id`, `user_id` UNIQUE FK -> `users.id`, `full_name`, `age`, `weight_kg`, `height_cm`, `fitness_level`, `days_per_week`, `equipment`, `health_limitations` JSONB, `health_notes`, `updated_at`)
-- `user_goals` (`id`, `user_id` UNIQUE FK -> `users.id`, `sport`, `goal_type`, `duration_weeks`, `updated_at`)
-- `workout_plans` (`id`, `user_id` FK -> `users.id`, `week_number`, `sport`, `goal_type`, `duration_weeks`, `cautious_mode`, `caution_reasons` JSONB, `safety_alert`, `strategy_summary`, `coach_principles` JSONB, `schedule_json` JSONB, `completed_days` JSONB, `created_at`)
+- **Giao diện (`src/components/`)**:
+  - `TodayTab.tsx`: Màn hình trung tâm **Hôm nay** (nhiệm vụ theo ngày thực tế, check-in 1 chạm, cam kết chiến lược hằng ngày, KPI kỷ luật, la bàn chiến lược).
+  - `StrategyV2RoadmapPanel.tsx`: Hiển thị đủ **8 câu hỏi chiến lược bắt buộc**, lộ trình đa giai đoạn, bảng khối lượng theo từng môn và bộ chuyển đổi lịch sử phiên bản (`v1`, `v2`, ...).
+  - `GoalTab.tsx` & `GoalOverviewDashboard.tsx`: Chọn nhiều bộ môn (1–3 môn), mục tiêu đo lường được, đánh giá tính khả thi trực tiếp, cấu hình lịch thực tế + múi giờ + khung giờ rảnh, quản lý sự đồng ý có phiên bản.
+  - `PlanTab.tsx` & `SmartwatchAndExportSection.tsx`: Lịch thực thi 7 ngày gắn ngày dương lịch, biểu đồ check-in tuần (phản ánh trung thực `day_checkin_only`), Daily Goal Tracker, Streak Counter, Smartwatch BLE/ICS sync và xuất CSV.
+  - `ProfileTab.tsx` & `AuthGate.tsx`: Hồ sơ thể chất, BMI phân nhóm tuổi (`<18` không áp ngưỡng người lớn), nhắc nhở trình duyệt.
+- **Miền nghiệp vụ & An toàn (`src/services/`, `src/shared/`)**:
+  - `src/shared/types.ts`: Hợp đồng kiểu dữ liệu, `evaluateBmi`, `evaluateSafetyProfile` (giới hạn tải tập theo nhóm tuổi `youth`/`teen`/`adult`/`senior` và giới hạn y khoa).
+  - `src/services/strategyEngineV2.ts`: Engine tính khả thi, phân bổ khối lượng đa môn, lộ trình giai đoạn, ánh xạ lịch thực tế theo múi giờ và sinh cam kết hằng ngày.
+  - `src/services/strategyValidator.ts`: Bộ kiểm định an toàn và chiến lược độc lập với AI.
+  - `src/services/aiPayload.ts`: Tối giản dữ liệu gửi AI và loại bỏ hoàn toàn PII (họ tên, email, SĐT, URL).
+- **Bảo mật Firestore (`firestore.rules`, `firebase-blueprint.json`, `security_spec.md`, `firebase.json`)**:
+  - Default-deny toàn cục, bắt buộc `email_verified == true` và `request.auth.uid == userId`, kiểm tra schema chặt chẽ bằng `hasAll`/`hasOnly` (bao gồm các trường Sprint 02 tùy chọn), `request.time`, và khóa cập nhật kế hoạch chỉ cho phép sửa `completedDays` + `updatedAt`.
 
----
+## 4. Đánh giá khả năng chuyển đổi sang Mobile App với Capacitor (Android / iOS)
 
-## 4. Đánh giá kiến trúc chuyển đổi sang Mobile App với Capacitor (Android / iOS)
-
-> Phạm vi Sprint 01: Chỉ đánh giá kiến trúc và khả năng tái sử dụng; chưa chuyển đổi mã nguồn.
-
-### 4.1 Mức độ tương thích hiện tại
-- **Tái sử dụng UI React (~85–90%)**: Giao diện hiện tại đã thiết kế theo chuẩn mobile-first (`viewport-fit=cover`, vùng chạm `>= 44px`, bottom navigation bar cố định `pb-safe`, không phụ thuộc SSR). Build đầu ra là static bundle tại `dist/`, hoàn toàn khớp với `webDir: "dist"` của Capacitor.
-- **Tách biệt Backend API**: Mọi tác vụ AI (`GEMINI_API_KEY`) và PostgreSQL (`SQL_*`) đã nằm ở Express server (`server.ts`), nên khi đóng gói WebView qua Capacitor, app di động chỉ cần gọi tới URL HTTPS của backend mà không làm lộ khóa bí mật.
-
-### 4.2 Các điểm cần thay đổi trước khi đóng gói Capacitor
-1. **API Base URL (`VITE_API_BASE_URL`)**: Hiện `src/App.tsx` gọi đường dẫn tương đối `/api/...`. Trong Capacitor (`capacitor://localhost` trên iOS hoặc `https://localhost` trên Android), đường dẫn tương đối sẽ trỏ vào local asset thay vì server thật. Cần cấu hình `VITE_API_BASE_URL` trỏ về Cloud Run URL và cấu hình CORS allowlist cho `capacitor://localhost` và `https://localhost`.
-2. **Firebase Google Sign-In trong WebView**: `signInWithPopup` thường bị chặn hoặc lỗi trong WebView của Android/iOS. Khi làm mobile app cần chuyển sang plugin native (ví dụ `@capacitor-firebase/authentication` hoặc `@codetrix-studio/capacitor-google-auth`) để lấy Google ID Token rồi đăng nhập vào Firebase Auth (`signInWithCredential`), đồng thời lưu phiên ổn định qua Preferences/Keychain.
-3. **Safe Area & Hardware Back Button**: Cần bổ sung `@capacitor/app` để xử lý nút Back vật lý trên Android (chuyển tab / xác nhận thoát) và `@capacitor/status-bar` để đồng bộ màu thanh trạng thái.
-4. **Offline & Local Cache**: Có thể bổ sung lớp cache đọc-only (`@capacitor/preferences` hoặc SQLite local) để người dùng xem lại lịch tập Tuần 1 khi mất mạng trong phòng tập, đồng bộ check-in khi có mạng trở lại.
-
-### 4.3 Kết luận kiến trúc
-Kiến trúc React + REST API hiện tại rất phù hợp để bọc bằng Capacitor trong các sprint tiếp theo với chi phí chuyển đổi thấp, với điều kiện bắt buộc xử lý **native Google Auth**, **API Base URL + CORS allowlist**, và **lưu trữ offline**.
+- **Tái sử dụng UI (~90%)**: Giao diện mobile-first với 4-tab bottom navigation (`Hôm nay`, `Chiến lược`, `Mục tiêu`, `Hồ sơ`), vùng chạm `>= 44px`, static bundle tại `dist/` tương thích trực tiếp `webDir: "dist"`.
+- **Hạng mục cần cấu hình khi đóng gói native**: `VITE_API_BASE_URL` + CORS allowlist cho `capacitor://localhost` & `https://localhost`, chuyển `signInWithPopup` sang native Google Auth plugin (`@capacitor-firebase/authentication`), tích hợp `@capacitor/app` cho nút Back Android và local cache offline cho màn hình `Hôm nay`.

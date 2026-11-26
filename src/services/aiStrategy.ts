@@ -5,15 +5,27 @@ import {
   FITNESS_LEVEL_LABELS,
   GOAL_LABELS,
   SPORT_LABELS,
+  TIME_SLOT_LABELS,
   type AiProviderName,
   type EquipmentOption,
   type FitnessLevel,
   type GoalType,
+  type MeasurableGoalSpec,
+  type SchedulePreferences,
   type SportOption,
+  type StrategyV2Blueprint,
   type WorkoutDay,
 } from '../shared/types.ts';
 import { buildMinimizedAiPayload } from './aiPayload.ts';
-import { validateWorkoutStrategy } from './strategyValidator.ts';
+import {
+  buildStrategyV2Blueprint,
+  normalizeSchedulePreferences,
+  normalizeSportsList,
+} from './strategyEngineV2.ts';
+import {
+  validateStrategyV2Blueprint,
+  validateWorkoutStrategy,
+} from './strategyValidator.ts';
 
 function getAiClient(): GoogleGenAI {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -56,8 +68,11 @@ export interface StrategyProfileInput {
 
 export interface StrategyGoalInput {
   sport: SportOption;
+  sports?: SportOption[];
   goalType: GoalType;
   durationWeeks: number;
+  measurableGoal?: MeasurableGoalSpec;
+  schedulePreferences?: Partial<SchedulePreferences>;
 }
 
 export interface GeneratedStrategyResult {
@@ -67,12 +82,15 @@ export interface GeneratedStrategyResult {
   strategySummary: string;
   coachPrinciples: string[];
   schedule: WorkoutDay[];
+  sports?: SportOption[];
+  strategyV2?: StrategyV2Blueprint;
   aiProvider: AiProviderName;
   isSimulated: boolean;
 }
 
 export interface StrategyGeneratorOptions {
   providerOverride?: AiProviderMode;
+  referenceDate?: Date;
 }
 
 const RESPONSE_SCHEMA = {
@@ -81,7 +99,33 @@ const RESPONSE_SCHEMA = {
     strategySummary: {
       type: Type.STRING,
       description:
-        'Tóm tắt chiến lược tập luyện Tuần 1 (2-3 câu ngắn gọn, thực tế bằng tiếng Việt dựa trên hồ sơ đã ẩn danh và mục tiêu).',
+        'Tóm tắt chiến lược tập luyện tổng thể (2-3 câu ngắn gọn, thực tế bằng tiếng Việt dựa trên hồ sơ đã ẩn danh và mục tiêu).',
+    },
+    ultimateGoal: {
+      type: Type.STRING,
+      description: 'Trả lời rõ câu hỏi: Mục tiêu cuối cùng đo lường được là gì?',
+    },
+    currentPosition: {
+      type: Type.STRING,
+      description: 'Trả lời rõ câu hỏi: Người dùng hiện đang ở đâu về nền tảng thể chất & kỷ luật?',
+    },
+    todayDirective: {
+      type: Type.STRING,
+      description: 'Trả lời rõ câu hỏi: Nhiệm vụ trọng tâm hôm nay là gì?',
+    },
+    reassessmentSchedule: {
+      type: Type.STRING,
+      description: 'Trả lời rõ câu hỏi: Khi nào cần đánh giá lại lộ trình?',
+    },
+    adjustmentSignals: {
+      type: Type.ARRAY,
+      items: { type: Type.STRING },
+      description: '3-4 dữ liệu cụ thể cần thu thập để điều chỉnh chiến lược.',
+    },
+    stopAndEscalateCriteria: {
+      type: Type.ARRAY,
+      items: { type: Type.STRING },
+      description: '3-4 tiêu chí rõ ràng về thời điểm cần dừng tập, phục hồi hoặc tham khảo chuyên gia/phụ huynh.',
     },
     safetyAlert: {
       type: Type.STRING,
@@ -91,7 +135,7 @@ const RESPONSE_SCHEMA = {
     coachPrinciples: {
       type: Type.ARRAY,
       items: { type: Type.STRING },
-      description: '3 nguyên tắc kỷ luật ngắn gọn cần giữ vững trong Tuần 1.',
+      description: '3 nguyên tắc kỷ luật ngắn gọn cần giữ vững.',
     },
     days: {
       type: Type.ARRAY,
@@ -142,7 +186,7 @@ const RESPONSE_SCHEMA = {
           exercises: {
             type: Type.ARRAY,
             description:
-              'Danh sách bài tập trong ngày (3-6 bài cho ngày tập; 0-2 hoạt động nhẹ cho ngày nghỉ).',
+              'Danh sách bài tập trong ngày (2-6 bài cho ngày tập; 0-2 hoạt động nhẹ cho ngày nghỉ).',
             items: {
               type: Type.OBJECT,
               properties: {
@@ -181,7 +225,18 @@ const RESPONSE_SCHEMA = {
       },
     },
   },
-  required: ['strategySummary', 'safetyAlert', 'coachPrinciples', 'days'],
+  required: [
+    'strategySummary',
+    'ultimateGoal',
+    'currentPosition',
+    'todayDirective',
+    'reassessmentSchedule',
+    'adjustmentSignals',
+    'stopAndEscalateCriteria',
+    'safetyAlert',
+    'coachPrinciples',
+    'days',
+  ],
 };
 
 /**
@@ -200,27 +255,32 @@ export function buildGeminiPrompt(
   const { safetyProfile } = minimized;
   const { cautiousMode, cautionReasons, isMinor, requiresMedicalClearance, loadLimits } =
     safetyProfile;
+  const sports = normalizeSportsList(goal.sport, goal.sports);
+  const sportNames = sports.map((s) => SPORT_LABELS[s]?.label ?? s).join(', ');
+  const prefs = normalizeSchedulePreferences(goal.schedulePreferences);
+  const slotInfo = TIME_SLOT_LABELS[prefs.preferredTimeSlot] ?? TIME_SLOT_LABELS.evening;
 
   const systemInstruction = `Bạn là AI Discipline Coach — huấn luyện viên kỷ luật và thể chất chuyên nghiệp, khoa học và đề cao an toàn y khoa.
-Nhiệm vụ của bạn: Phân tích hồ sơ đã tối giản hóa (không chứa thông tin định danh cá nhân) và mục tiêu tập luyện để thiết kế Lịch Tập Tuần 1 (7 ngày từ Thứ 2 đến Chủ nhật) hoàn toàn bằng tiếng Việt tự nhiên, rõ ràng, ngắn gọn, dễ thực hiện trên điện thoại.
+Triết lý cốt lõi: Tập luyện thể thao là phương tiện, rèn luyện kỷ luật để đạt mục tiêu cá nhân mới là giá trị cốt lõi.
+Nhiệm vụ của bạn: Không chỉ liệt kê bài tập Tuần 1, mà phải xây dựng chiến lược rõ ràng trả lời đủ: mục tiêu cuối cùng, người dùng đang ở đâu, các giai đoạn, khối lượng tập luyện, nhiệm vụ hôm nay, lịch đánh giá lại, dữ liệu điều chỉnh, và tiêu chí dừng/phục hồi/tham khảo chuyên gia, cùng lịch 7 ngày chi tiết (Thứ 2 đến Chủ nhật) hoàn toàn bằng tiếng Việt tự nhiên.
 
 QUY TẮC BẮT BUỘC (HỆ THỐNG KIỂM ĐỊNH ĐỘC LẬP SẼ TỪ CHỐI NẾU VI PHẠM):
 1. Bắt buộc trả về đúng 7 ngày theo thứ tự dayIndex duy nhất từ 1 (Thứ 2) đến 7 (Chủ nhật).
 2. Số ngày tập chính (isRestDay = false) PHẢI KHỚP chính xác ${minimized.daysPerWeek} ngày tập và ${7 - minimized.daysPerWeek} ngày nghỉ (isRestDay = true). Ngày nghỉ phải có intensity = "Nhẹ", estimatedMinutes <= 30, tối đa 2 hoạt động giãn cơ nhẹ.
 3. Giới hạn tải tập bắt buộc cho hồ sơ này:
-   - Thời lượng mỗi buổi tập: 15–${loadLimits.maxSessionMinutes} phút; tổng thời lượng tuần <= ${loadLimits.maxWeeklyMinutes} phút.
+   - Thời lượng mỗi buổi tập: 15–${Math.min(loadLimits.maxSessionMinutes, prefs.minutesPerSessionBudget)} phút; tổng thời lượng tuần <= ${loadLimits.maxWeeklyMinutes} phút.
    - Số bài tập mỗi ngày tập: 1–${loadLimits.maxExercisesPerDay} bài; số hiệp mỗi bài: 1–${loadLimits.maxSetsPerExercise} hiệp; tổng số hiệp/ngày <= ${loadLimits.maxDailySets}; tổng hiệp/tuần <= ${loadLimits.maxWeeklySets}.
    - Số lần mỗi hiệp <= ${loadLimits.maxRepsPerSet} lần; thời lượng mỗi bài <= ${loadLimits.maxExerciseDurationMinutes} phút.
    - Nghỉ giữa hiệp >= ${loadLimits.minRestSeconds} giây.
    - Không xếp quá ${loadLimits.maxConsecutiveWorkoutDays} ngày tập liên tiếp không nghỉ.
    - ${loadLimits.allowHighIntensity ? `Tối đa ${loadLimits.maxConsecutiveHighDays} ngày liên tiếp cường độ "Cao".` : 'TUYỆT ĐỐI KHÔNG dùng cường độ "Cao" ở bất kỳ ngày nào; chỉ dùng "Nhẹ" hoặc "Trung bình".'}
-4. Tất cả bài tập phải phù hợp tuyệt đối với dụng cụ có sẵn (${EQUIPMENT_LABELS[minimized.equipment].label}) và môn chính (${SPORT_LABELS[minimized.goal.sport].label}).
+4. Tất cả bài tập phải phù hợp tuyệt đối với dụng cụ có sẵn (${EQUIPMENT_LABELS[minimized.equipment].label}) và phân bổ cân bằng giữa các môn đã chọn (${sportNames}).
 ${
   isMinor
     ? `5. QUY TẮC NGƯỜI CHƯA THÀNH NIÊN (${minimized.ageGroup}):
    - Không áp dụng chuẩn BMI người lớn.
    - Ưu tiên kỹ thuật chuẩn, thể trọng cơ thể và hình thành kỷ luật; cấm tuyệt đối nâng tạ tối đa (1RM), cử giật/cử đẩy, tập đến kiệt sức${minimized.ageGroup === 'youth' ? ', tạ đòn/barbell/deadlift' : ''}.
-   - Trong "safetyAlert" bắt buộc nêu rõ yêu cầu phụ huynh hoặc người giám hộ đồng hành/giám sát.`
+   - Trong "safetyAlert" và "stopAndEscalateCriteria" bắt buộc nêu rõ yêu cầu phụ huynh hoặc người giám hộ đồng hành/giám sát.`
     : ''
 }
 ${
@@ -233,10 +293,10 @@ ${cautionReasons.map((r) => `   - ${r}`).join('\n')}
        ? ' BẮT BUỘC khuyến nghị rõ ràng việc tham khảo ý kiến bác sĩ hoặc chuyên gia y tế trước khi tập.'
        : ''
    }`
-    : '6. Xây dựng nền tảng kỷ luật Tuần 1, tránh quá tải đột ngột.'
+    : '6. Xây dựng nền tảng kỷ luật bền vững theo đúng thời hạn mục tiêu, tránh quá tải đột ngột.'
 }`;
 
-  const userPrompt = `Hãy phân tích hồ sơ đã ẩn danh và mục tiêu sau để tạo Lịch Tập Tuần 1 chi tiết:
+  const userPrompt = `Hãy phân tích hồ sơ đã ẩn danh và mục tiêu sau để xây dựng Chiến lược toàn diện (Strategy Engine v2) và Lịch Tập Tuần 1 chi tiết:
 
 HỒ SƠ THỂ CHẤT TỐI GIẢN (KHÔNG CHỨA HỌ TÊN / EMAIL):
 - Nhóm tuổi: ${minimized.ageGroup} (khung tuổi: ${minimized.ageBracket})
@@ -256,17 +316,44 @@ HỒ SƠ THỂ CHẤT TỐI GIẢN (KHÔNG CHỨA HỌ TÊN / EMAIL):
     requiresMedicalClearance ? ' · YÊU CẦU ĐÁNH GIÁ SỨC KHỎE CHUYÊN MÔN' : ''
   }
 
-MỤC TIÊU TẬP LUYỆN:
-- Môn chính: ${SPORT_LABELS[minimized.goal.sport].label}
-- Mục tiêu: ${GOAL_LABELS[minimized.goal.goalType].label} (${GOAL_LABELS[minimized.goal.goalType].desc})
-- Thời hạn lộ trình: ${minimized.goal.durationWeeks} tuần (đây là lịch cho Tuần 1 / ${minimized.goal.durationWeeks})
+MỤC TIÊU & LỊCH THỰC TẾ:
+- Nhóm môn thể thao: ${sportNames} (môn chính: ${SPORT_LABELS[minimized.goal.sport].label})
+- Mục tiêu trọng tâm: ${GOAL_LABELS[minimized.goal.goalType].label} (${GOAL_LABELS[minimized.goal.goalType].desc})
+- Mục tiêu đo lường cụ thể: ${minimized.goal.measurableTargetSummary ?? 'Duy trì đều lịch cam kết theo tuần'}
+- Thời hạn lộ trình: ${minimized.goal.durationWeeks} tuần (lịch chi tiết cho Tuần 1 / ${minimized.goal.durationWeeks})
+- Khung giờ rảnh & thời lượng mỗi buổi: ${slotInfo.label} (${slotInfo.window}), ngân sách ~${prefs.minutesPerSessionBudget} phút/buổi, múi giờ ${prefs.timezone}
 
-Hãy trả về đúng cấu trúc JSON theo schema với đúng 7 ngày (dayIndex từ 1 đến 7).`;
+Hãy trả về đúng cấu trúc JSON theo schema với đầy đủ câu trả lời chiến lược và đúng 7 ngày (dayIndex từ 1 đến 7).`;
 
   return { systemInstruction, userPrompt, minimizedPayload: minimized };
 }
 
-function selectBalancedWorkoutDayIndices(daysPerWeek: number): number[] {
+function selectBalancedWorkoutDayIndices(
+  daysPerWeek: number,
+  preferredDays?: number[],
+  maxConsecutive = 5
+): number[] {
+  if (Array.isArray(preferredDays) && preferredDays.length === daysPerWeek) {
+    const sorted = Array.from(new Set(preferredDays))
+      .filter((d) => Number.isInteger(d) && d >= 1 && d <= 7)
+      .sort((a, b) => a - b);
+    if (sorted.length === daysPerWeek) {
+      let streak = 0;
+      let maxStreak = 0;
+      for (let d = 1; d <= 7; d += 1) {
+        if (sorted.includes(d)) {
+          streak += 1;
+          maxStreak = Math.max(maxStreak, streak);
+        } else {
+          streak = 0;
+        }
+      }
+      if (maxStreak <= maxConsecutive) {
+        return sorted;
+      }
+    }
+  }
+
   const presets: Record<number, number[]> = {
     1: [1],
     2: [1, 4],
@@ -279,29 +366,128 @@ function selectBalancedWorkoutDayIndices(daysPerWeek: number): number[] {
   return presets[daysPerWeek] ?? [1, 3, 5];
 }
 
+function buildExercisesForSport(params: {
+  sport: SportOption;
+  equipment: EquipmentOption;
+  setCount: number;
+  repCount: number;
+  restSec: number;
+  cautiousMode: boolean;
+  isYouth: boolean;
+}) {
+  const { sport, equipment, setCount, repCount, restSec, cautiousMode, isYouth } = params;
+
+  if (sport === 'running') {
+    return [
+      {
+        name: cautiousMode
+          ? 'Đi bộ nhanh nhịp đều kết hợp bước chạy nhẹ kiểm soát'
+          : 'Chạy nhịp nền Zone 2 kết hợp kiểm soát hơi thở',
+        sets: `${setCount} hiệp`,
+        repsOrDuration: cautiousMode ? '5 phút' : '7 phút',
+        restSeconds: restSec,
+        note: 'Giữ nhịp thở nói chuyện được, đáp chân êm tránh sốc khớp gối.',
+      },
+      {
+        name: 'Nâng gót chân chậm ổn định cổ chân',
+        sets: `${setCount} hiệp`,
+        repsOrDuration: `${repCount} lần`,
+        restSeconds: restSec,
+        note: 'Giữ thẳng thân người, hạ gót chậm có kiểm soát.',
+      },
+    ];
+  }
+
+  if (sport === 'gym' && equipment === 'gym' && !isYouth) {
+    return [
+      {
+        name: 'Đẩy ngực kiểm soát với tạ nhẹ vừa sức (Chest Press kiểm soát)',
+        sets: `${setCount} hiệp`,
+        repsOrDuration: `${repCount} lần`,
+        restSeconds: restSec,
+        note: 'Hạ chậm 2 giây, không khóa khớp khuỷu, giữ nhịp thở đều không nín thở.',
+      },
+      {
+        name: 'Kéo lưng ngồi máy kiểm soát vai (Seated Row kiểm soát)',
+        sets: `${setCount} hiệp`,
+        repsOrDuration: `${repCount} lần`,
+        restSeconds: restSec,
+        note: 'Giữ lưng trung tính, kéo bằng cơ lưng và ép bả vai nhẹ.',
+      },
+      {
+        name: 'Goblet Squat biên độ an toàn kiểm soát gối',
+        sets: `${setCount} hiệp`,
+        repsOrDuration: `${repCount} lần`,
+        restSeconds: restSec,
+        note: 'Đẩy gối theo hướng mũi chân, dừng ở biên độ thoải mái cho khớp.',
+      },
+    ];
+  }
+
+  // home_workout (or safe bodyweight equivalent when equipment=none or youth)
+  return [
+    {
+      name: 'Đứng lên ngồi xuống ghế chậm (Chair Squat)',
+      sets: `${setCount} hiệp`,
+      repsOrDuration: `${repCount} lần`,
+      restSeconds: restSec,
+      note: 'Hạ hông chậm có kiểm soát, giữ lưng trung tính và thở đều.',
+    },
+    {
+      name:
+        equipment === 'home' && !cautiousMode && !isYouth
+          ? 'Chống đẩy nghiêng hoặc đẩy vai kiểm soát với dây kháng lực'
+          : 'Chống đẩy tường kiểm soát thân trên (Wall Push-up)',
+      sets: `${setCount} hiệp`,
+      repsOrDuration: `${repCount} lần`,
+      restSeconds: restSec,
+      note: 'Siết nhẹ cơ lõi, giữ cổ tay và vai thẳng hàng.',
+    },
+    {
+      name: 'Giữ thăng bằng Bird-Dog chậm',
+      sets: `${setCount} hiệp`,
+      repsOrDuration: '30 giây',
+      restSeconds: restSec,
+      note: 'Không võng lưng dưới, giữ nhịp thở đều đặn.',
+    },
+  ];
+}
+
 /**
- * Deterministic DEV/test strategy provider.
+ * Deterministic DEV/test strategy provider (Strategy Engine v2).
  * Strictly forbidden in production and always labeled with isSimulated: true so it is never
- * presented as real Gemini API output. Still verified by validateWorkoutStrategy().
+ * presented as real Gemini API output. Still verified by validateWorkoutStrategy() and validateStrategyV2Blueprint().
  */
 export function generateMockWeekOneStrategy(
   profile: StrategyProfileInput,
-  goal: StrategyGoalInput
+  goal: StrategyGoalInput,
+  referenceDate: Date = new Date()
 ): GeneratedStrategyResult {
   const { minimizedPayload } = buildGeminiPrompt(profile, goal);
   const { safetyProfile } = minimizedPayload;
   const { cautiousMode, cautionReasons, isMinor, requiresMedicalClearance, loadLimits } =
     safetyProfile;
 
+  const sports = normalizeSportsList(goal.sport, goal.sports);
+  const prefs = normalizeSchedulePreferences(goal.schedulePreferences, referenceDate);
+
   const labels = ['Thứ 2', 'Thứ 3', 'Thứ 4', 'Thứ 5', 'Thứ 6', 'Thứ 7', 'Chủ nhật'];
-  const activeIndices = new Set(selectBalancedWorkoutDayIndices(profile.daysPerWeek));
-  const sessionMinutes = Math.min(35, loadLimits.maxSessionMinutes);
+  const activeIndicesList = selectBalancedWorkoutDayIndices(
+    profile.daysPerWeek,
+    prefs.preferredDays,
+    loadLimits.maxConsecutiveWorkoutDays
+  );
+  const activeIndices = new Set(activeIndicesList);
+  const sessionMinutes = Math.max(
+    20,
+    Math.min(prefs.minutesPerSessionBudget, loadLimits.maxSessionMinutes)
+  );
   const restSec = Math.max(60, loadLimits.minRestSeconds);
   const setCount = Math.min(3, loadLimits.maxSetsPerExercise);
   const repCount = Math.min(10, loadLimits.maxRepsPerSet);
   const intensity: WorkoutDay['intensity'] = cautiousMode || isMinor ? 'Nhẹ' : 'Trung bình';
 
-  const sportLabel = SPORT_LABELS[goal.sport]?.label ?? goal.sport;
+  const sportNames = sports.map((s) => SPORT_LABELS[s]?.label ?? s).join(' + ');
   const goalLabel = GOAL_LABELS[goal.goalType]?.label ?? goal.goalType;
 
   const alertParts: string[] = [
@@ -318,6 +504,7 @@ export function generateMockWeekOneStrategy(
     );
   }
 
+  let activeSessionCounter = 0;
   const days: WorkoutDay[] = labels.map((dayLabel, idx) => {
     const dayIndex = idx + 1;
     const isRestDay = !activeIndices.has(dayIndex);
@@ -345,54 +532,26 @@ export function generateMockWeekOneStrategy(
       };
     }
 
-    const exerciseList =
-      goal.sport === 'running'
-        ? [
-            {
-              name: 'Đi bộ nhanh kết hợp bước chạy nhẹ kiểm soát',
-              sets: `${setCount} hiệp`,
-              repsOrDuration: '5 phút',
-              restSeconds: restSec,
-              note: 'Giữ nhịp thở nói chuyện được, đáp chân êm tránh sốc khớp.',
-            },
-            {
-              name: 'Nâng gót chân chậm bảo vệ cổ chân',
-              sets: `${setCount} hiệp`,
-              repsOrDuration: `${repCount} lần`,
-              restSeconds: restSec,
-              note: 'Giữ thẳng thân người, hạ gót chậm có kiểm soát.',
-            },
-          ]
-        : [
-            {
-              name: 'Đứng lên ngồi xuống ghế chậm (Chair Squat)',
-              sets: `${setCount} hiệp`,
-              repsOrDuration: `${repCount} lần`,
-              restSeconds: restSec,
-              note: 'Hạ hông chậm có kiểm soát, giữ lưng trung tính và thở đều.',
-            },
-            {
-              name: 'Chống đẩy tường kiểm soát thân trên (Wall Push-up)',
-              sets: `${setCount} hiệp`,
-              repsOrDuration: `${repCount} lần`,
-              restSeconds: restSec,
-              note: 'Siết nhẹ cơ lõi, giữ cổ tay và vai thẳng hàng.',
-            },
-            {
-              name: 'Giữ thăng bằng Bird-Dog chậm',
-              sets: `${setCount} hiệp`,
-              repsOrDuration: '30 giây',
-              restSeconds: restSec,
-              note: 'Không võng lưng dưới, giữ nhịp thở đều đặn.',
-            },
-          ];
+    const sessionSport = sports[activeSessionCounter % sports.length];
+    activeSessionCounter += 1;
+    const sessionSportLabel = SPORT_LABELS[sessionSport]?.label ?? sessionSport;
+
+    const exerciseList = buildExercisesForSport({
+      sport: sessionSport,
+      equipment: profile.equipment,
+      setCount,
+      repCount,
+      restSec,
+      cautiousMode,
+      isYouth: safetyProfile.ageGroup === 'youth',
+    });
 
     return {
       dayIndex,
       dayLabel,
       isRestDay: false,
-      title: `Buổi nền tảng ${sportLabel} #${dayIndex}`,
-      focusArea: `Xây nền kỷ luật · ${goalLabel}`,
+      title: `Buổi ${sessionSportLabel} nền tảng #${activeSessionCounter}`,
+      focusArea: `Xây nền kỷ luật · ${sessionSportLabel} · ${goalLabel}`,
       estimatedMinutes: sessionMinutes,
       intensity,
       warmup: 'Xoay khớp cổ tay, vai, hông và đi bộ tại chỗ 6 phút.',
@@ -403,12 +562,12 @@ export function generateMockWeekOneStrategy(
   });
 
   const candidatePayload = {
-    strategySummary: `[Mô phỏng DEV — không phải kết quả Gemini thật] Lịch Tuần 1 gồm ${profile.daysPerWeek} buổi ${sportLabel.toLowerCase()} theo mục tiêu ${goalLabel.toLowerCase()}, ưu tiên kỷ luật thực hiện đều đặn trong ngưỡng tải an toàn.`,
+    strategySummary: `[Mô phỏng DEV — không phải kết quả Gemini thật] Lộ trình ${goal.durationWeeks} tuần nhóm môn ${sportNames} theo mục tiêu ${goalLabel.toLowerCase()}, gồm ${profile.daysPerWeek} buổi/tuần (~${sessionMinutes} phút/buổi) trong ngưỡng tải an toàn.`,
     safetyAlert: alertParts.join(' '),
     coachPrinciples: [
-      'Hoàn thành đúng lịch cam kết trước khi tăng độ khó.',
-      'Ưu tiên kỹ thuật chuẩn, nhịp thở đều và phục hồi đầy đủ.',
-      'Ghi nhận check-in trung thực mỗi ngày để điều chỉnh tuần kế tiếp.',
+      'Hoàn thành đúng lịch cam kết theo khung giờ rảnh trước khi tăng độ khó.',
+      'Ưu tiên kỹ thuật chuẩn, nhịp thở đều và phục hồi đầy đủ giữa các buổi.',
+      'Ghi nhận check-in trung thực hằng ngày để đánh giá và điều chỉnh ở mốc Tuần 2.',
     ],
     days,
   };
@@ -421,6 +580,21 @@ export function generateMockWeekOneStrategy(
     );
   }
 
+  const strategyV2 = buildStrategyV2Blueprint({
+    profile,
+    goal: { ...goal, sports, schedulePreferences: prefs },
+    schedule: validation.normalizedDays,
+    referenceDate,
+  });
+
+  const v2Validation = validateStrategyV2Blueprint(strategyV2, profile, goal);
+  if (!v2Validation.valid) {
+    throw new StrategyValidationError(
+      'Chiến lược tổng thể v2 chưa đạt chuẩn quy tắc an toàn độc lập.',
+      v2Validation.errors
+    );
+  }
+
   return {
     cautiousMode,
     cautionReasons,
@@ -428,6 +602,8 @@ export function generateMockWeekOneStrategy(
     strategySummary: candidatePayload.strategySummary,
     coachPrinciples: candidatePayload.coachPrinciples,
     schedule: validation.normalizedDays,
+    sports,
+    strategyV2,
     aiProvider: 'mock',
     isSimulated: true,
   };
@@ -440,19 +616,22 @@ export async function generateWeekOneStrategy(
 ): Promise<GeneratedStrategyResult> {
   const runtime = resolveRuntimeConfig();
   const provider: AiProviderMode = options?.providerOverride ?? runtime.aiProvider;
+  const referenceDate = options?.referenceDate ?? new Date();
 
   if (runtime.appEnv === 'production' && provider === 'mock') {
     throw new Error('Không được phép sử dụng Mock AI trong môi trường Production.');
   }
 
   if (provider === 'mock') {
-    return generateMockWeekOneStrategy(profile, goal);
+    return generateMockWeekOneStrategy(profile, goal, referenceDate);
   }
 
   // Real Gemini provider — NEVER silently falls back to mock AI on error or missing key
   const ai = getAiClient();
   const { systemInstruction, userPrompt, minimizedPayload } = buildGeminiPrompt(profile, goal);
   const { cautiousMode, cautionReasons } = minimizedPayload.safetyProfile;
+  const sports = normalizeSportsList(goal.sport, goal.sports);
+  const prefs = normalizeSchedulePreferences(goal.schedulePreferences, referenceDate);
 
   let lastError: unknown;
   let lastValidationErrors: string[] = [];
@@ -487,6 +666,12 @@ export async function generateWeekOneStrategy(
 
       let parsed: {
         strategySummary?: string;
+        ultimateGoal?: string;
+        currentPosition?: string;
+        todayDirective?: string;
+        reassessmentSchedule?: string;
+        adjustmentSignals?: string[];
+        stopAndEscalateCriteria?: string[];
         safetyAlert?: string;
         coachPrinciples?: string[];
         days?: unknown[];
@@ -523,6 +708,30 @@ export async function generateWeekOneStrategy(
         );
       }
 
+      const strategyV2 = buildStrategyV2Blueprint({
+        profile,
+        goal: { ...goal, sports, schedulePreferences: prefs },
+        schedule: validation.normalizedDays,
+        aiNarrativeOverrides: {
+          ultimateGoal: parsed.ultimateGoal,
+          currentPosition: parsed.currentPosition,
+          todayDirective: parsed.todayDirective,
+          reassessmentSchedule: parsed.reassessmentSchedule,
+          adjustmentSignals: parsed.adjustmentSignals,
+          stopAndEscalateCriteria: parsed.stopAndEscalateCriteria,
+        },
+        referenceDate,
+      });
+
+      const v2Validation = validateStrategyV2Blueprint(strategyV2, profile, goal);
+      if (!v2Validation.valid) {
+        lastValidationErrors = v2Validation.errors;
+        throw new StrategyValidationError(
+          'Chiến lược tổng thể AI tạo ra chưa đạt chuẩn kiểm định độc lập.',
+          v2Validation.errors
+        );
+      }
+
       return {
         cautiousMode,
         cautionReasons,
@@ -533,6 +742,8 @@ export async function generateWeekOneStrategy(
           .filter(Boolean)
           .slice(0, 4),
         schedule: validation.normalizedDays,
+        sports,
+        strategyV2,
         aiProvider: 'gemini',
         isSimulated: false,
       };

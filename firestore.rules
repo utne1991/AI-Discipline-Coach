@@ -32,6 +32,145 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == userId;
     }
 
+    function isValidSportsList(sports) {
+      return sports is list &&
+        sports.size() >= 1 &&
+        sports.size() <= 3 &&
+        sports[0] in ['running', 'home_workout', 'gym'] &&
+        (sports.size() < 2 || sports[1] in ['running', 'home_workout', 'gym']) &&
+        (sports.size() < 3 || sports[2] in ['running', 'home_workout', 'gym']);
+    }
+
+    function isValidMeasurableGoal(goal) {
+      return goal is map &&
+        goal.keys().hasAll(['metricKey', 'targetLabel', 'currentValue', 'targetValue', 'unit']) &&
+        goal.keys().hasOnly(['metricKey', 'targetLabel', 'currentValue', 'targetValue', 'unit']) &&
+        goal.metricKey in [
+          'run_distance_km',
+          'weight_change_kg',
+          'weekly_sessions',
+          'strength_reps',
+          'endurance_minutes'
+        ] &&
+        goal.targetLabel is string &&
+        goal.targetLabel.size() >= 1 &&
+        goal.targetLabel.size() <= 160 &&
+        goal.currentValue is number &&
+        goal.currentValue >= 0 &&
+        goal.currentValue <= 10000 &&
+        goal.targetValue is number &&
+        goal.targetValue >= 0 &&
+        goal.targetValue <= 10000 &&
+        goal.unit is string &&
+        goal.unit.size() >= 1 &&
+        goal.unit.size() <= 24;
+    }
+
+    function isValidSchedulePreferences(pref) {
+      return pref is map &&
+        pref.keys().hasAll([
+          'startDateKey',
+          'timezone',
+          'preferredTimeSlot',
+          'minutesPerSessionBudget'
+        ]) &&
+        pref.keys().hasOnly([
+          'startDateKey',
+          'timezone',
+          'preferredTimeSlot',
+          'minutesPerSessionBudget',
+          'preferredDays'
+        ]) &&
+        isValidDateKey(pref.startDateKey) &&
+        pref.timezone is string &&
+        pref.timezone.size() >= 1 &&
+        pref.timezone.size() <= 64 &&
+        pref.preferredTimeSlot in ['morning', 'noon', 'evening'] &&
+        pref.minutesPerSessionBudget is int &&
+        pref.minutesPerSessionBudget >= 20 &&
+        pref.minutesPerSessionBudget <= 90 &&
+        (!('preferredDays' in pref) || (pref.preferredDays is list && pref.preferredDays.size() <= 7));
+    }
+
+    function isValidStrategyV2(strategy) {
+      return strategy is map &&
+        strategy.keys().hasAll([
+          'engineVersion',
+          'sports',
+          'measurableGoal',
+          'feasibility',
+          'ultimateGoal',
+          'currentPosition',
+          'phases',
+          'milestones',
+          'volumeAllocation',
+          'todayDirective',
+          'reassessmentSchedule',
+          'adjustmentSignals',
+          'stopAndEscalateCriteria',
+          'calendarContext',
+          'dailyCommitments'
+        ]) &&
+        strategy.keys().hasOnly([
+          'engineVersion',
+          'sports',
+          'measurableGoal',
+          'feasibility',
+          'ultimateGoal',
+          'currentPosition',
+          'phases',
+          'milestones',
+          'volumeAllocation',
+          'todayDirective',
+          'reassessmentSchedule',
+          'adjustmentSignals',
+          'stopAndEscalateCriteria',
+          'calendarContext',
+          'dailyCommitments'
+        ]) &&
+        strategy.engineVersion == '2.0' &&
+        isValidSportsList(strategy.sports) &&
+        isValidMeasurableGoal(strategy.measurableGoal) &&
+        strategy.feasibility is map &&
+        strategy.ultimateGoal is string &&
+        strategy.ultimateGoal.size() >= 1 &&
+        strategy.ultimateGoal.size() <= 600 &&
+        strategy.currentPosition is string &&
+        strategy.currentPosition.size() >= 1 &&
+        strategy.currentPosition.size() <= 600 &&
+        strategy.phases is list &&
+        strategy.phases.size() >= 1 &&
+        strategy.phases.size() <= 6 &&
+        strategy.phases[0] is map &&
+        strategy.milestones is list &&
+        strategy.milestones.size() >= 1 &&
+        strategy.milestones.size() <= 12 &&
+        strategy.milestones[0] is map &&
+        strategy.volumeAllocation is list &&
+        strategy.volumeAllocation.size() >= 1 &&
+        strategy.volumeAllocation.size() <= 3 &&
+        strategy.volumeAllocation[0] is map &&
+        strategy.todayDirective is string &&
+        strategy.todayDirective.size() >= 1 &&
+        strategy.todayDirective.size() <= 600 &&
+        strategy.reassessmentSchedule is string &&
+        strategy.reassessmentSchedule.size() >= 1 &&
+        strategy.reassessmentSchedule.size() <= 600 &&
+        strategy.adjustmentSignals is list &&
+        strategy.adjustmentSignals.size() >= 1 &&
+        strategy.adjustmentSignals.size() <= 8 &&
+        strategy.adjustmentSignals[0] is string &&
+        strategy.stopAndEscalateCriteria is list &&
+        strategy.stopAndEscalateCriteria.size() >= 1 &&
+        strategy.stopAndEscalateCriteria.size() <= 10 &&
+        strategy.stopAndEscalateCriteria[0] is string &&
+        strategy.calendarContext is map &&
+        strategy.dailyCommitments is list &&
+        strategy.dailyCommitments.size() >= 1 &&
+        strategy.dailyCommitments.size() <= 21 &&
+        strategy.dailyCommitments[0] is map;
+    }
+
     function isValidUserProfile(data, userId) {
       return data.keys().hasAll([
           'uid',
@@ -159,8 +298,11 @@ service cloud.firestore {
         data.keys().hasOnly([
           'uid',
           'sport',
+          'sports',
           'goalType',
           'durationWeeks',
+          'measurableGoal',
+          'schedulePreferences',
           'createdAt',
           'updatedAt'
         ]) &&
@@ -169,10 +311,13 @@ service cloud.firestore {
         data.uid == request.auth.uid &&
         data.uid == userId &&
         data.sport in ['running', 'home_workout', 'gym'] &&
+        (!('sports' in data) || isValidSportsList(data.sports)) &&
         data.goalType in ['weight_loss', 'muscle_gain', 'endurance'] &&
         data.durationWeeks is int &&
         data.durationWeeks >= 4 &&
         data.durationWeeks <= 12 &&
+        (!('measurableGoal' in data) || isValidMeasurableGoal(data.measurableGoal)) &&
+        (!('schedulePreferences' in data) || isValidSchedulePreferences(data.schedulePreferences)) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
@@ -180,8 +325,11 @@ service cloud.firestore {
     function isUpdateFitnessGoalAction() {
       return incoming().diff(existing()).affectedKeys().hasOnly([
         'sport',
+        'sports',
         'goalType',
         'durationWeeks',
+        'measurableGoal',
+        'schedulePreferences',
         'updatedAt'
       ]);
     }
@@ -229,6 +377,67 @@ service cloud.firestore {
       ]);
     }
 
+    function isValidSmartwatchConnection(data, userId) {
+      return data.keys().hasAll([
+          'uid',
+          'deviceName',
+          'platform',
+          'autoSyncCalendar',
+          'lastConnectedAt',
+          'lastHeartRateBpm',
+          'lastBatteryPercent',
+          'totalSyncedSessions',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'uid',
+          'deviceName',
+          'platform',
+          'autoSyncCalendar',
+          'lastConnectedAt',
+          'lastHeartRateBpm',
+          'lastBatteryPercent',
+          'totalSyncedSessions',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.uid is string &&
+        isValidId(data.uid) &&
+        data.uid == request.auth.uid &&
+        data.uid == userId &&
+        data.deviceName is string &&
+        data.deviceName.size() >= 1 &&
+        data.deviceName.size() <= 80 &&
+        data.platform in ['ble_heart_rate', 'apple_watch_ics', 'wear_os_ics', 'garmin_ics'] &&
+        data.autoSyncCalendar is bool &&
+        data.lastConnectedAt is string &&
+        data.lastConnectedAt.size() <= 40 &&
+        data.lastHeartRateBpm is int &&
+        (data.lastHeartRateBpm == 0 || (data.lastHeartRateBpm >= 30 && data.lastHeartRateBpm <= 240)) &&
+        data.lastBatteryPercent is int &&
+        data.lastBatteryPercent >= -1 &&
+        data.lastBatteryPercent <= 100 &&
+        data.totalSyncedSessions is int &&
+        data.totalSyncedSessions >= 0 &&
+        data.totalSyncedSessions <= 10000 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isUpdateSmartwatchConnectionAction() {
+      return incoming().diff(existing()).affectedKeys().hasOnly([
+        'deviceName',
+        'platform',
+        'autoSyncCalendar',
+        'lastConnectedAt',
+        'lastHeartRateBpm',
+        'lastBatteryPercent',
+        'totalSyncedSessions',
+        'updatedAt'
+      ]);
+    }
+
     function isValidWorkoutPlan(data, userId) {
       return data.keys().hasAll([
           'uid',
@@ -252,6 +461,7 @@ service cloud.firestore {
           'numericId',
           'weekNumber',
           'sport',
+          'sports',
           'goalType',
           'durationWeeks',
           'cautiousMode',
@@ -263,6 +473,10 @@ service cloud.firestore {
           'completedDays',
           'aiProvider',
           'isSimulated',
+          'versionNumber',
+          'parentPlanId',
+          'revisionReason',
+          'strategyV2',
           'createdAt',
           'updatedAt'
         ]) &&
@@ -276,6 +490,7 @@ service cloud.firestore {
         data.weekNumber >= 1 &&
         data.weekNumber <= 52 &&
         data.sport in ['running', 'home_workout', 'gym'] &&
+        (!('sports' in data) || isValidSportsList(data.sports)) &&
         data.goalType in ['weight_loss', 'muscle_gain', 'endurance'] &&
         data.durationWeeks is int &&
         data.durationWeeks >= 4 &&
@@ -299,6 +514,10 @@ service cloud.firestore {
         (data.completedDays.size() == 0 || data.completedDays[0] is int) &&
         (!('aiProvider' in data) || data.aiProvider in ['gemini', 'mock']) &&
         (!('isSimulated' in data) || data.isSimulated is bool) &&
+        (!('versionNumber' in data) || (data.versionNumber is int && data.versionNumber >= 1 && data.versionNumber <= 500)) &&
+        (!('parentPlanId' in data) || data.parentPlanId == null || (data.parentPlanId is int && data.parentPlanId > 0)) &&
+        (!('revisionReason' in data) || (data.revisionReason is string && data.revisionReason.size() <= 240)) &&
+        (!('strategyV2' in data) || isValidStrategyV2(data.strategyV2)) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
@@ -421,6 +640,24 @@ service cloud.firestore {
         allow delete: if false;
       }
 
+      match /appData/smartwatch {
+        allow get: if isOwner(userId) && isValidId(userId);
+        allow list: if false;
+        allow create: if isOwner(userId) &&
+          isValidId(userId) &&
+          isValidSmartwatchConnection(incoming(), userId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time;
+        allow update: if isOwner(userId) &&
+          isValidId(userId) &&
+          isValidSmartwatchConnection(incoming(), userId) &&
+          incoming().uid == existing().uid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          isUpdateSmartwatchConnectionAction();
+        allow delete: if false;
+      }
+
       match /plans/{planId} {
         allow get: if isOwner(userId) && isValidId(userId) && isValidId(planId);
         allow list: if isOwner(userId) && existing().uid == request.auth.uid;
@@ -444,7 +681,7 @@ service cloud.firestore {
 
       match /dailyGoals/{dateKey} {
         allow get: if isOwner(userId) && isValidId(userId) && isValidDateKey(dateKey);
-        allow list: if false;
+        allow list: if isOwner(userId) && existing().uid == request.auth.uid;
         allow create: if isOwner(userId) &&
           isValidId(userId) &&
           isValidDateKey(dateKey) &&

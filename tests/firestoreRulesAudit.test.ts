@@ -22,6 +22,7 @@ test('firestore.rules enforces global default-deny, email-verified ownership, an
     'match /appData/profile',
     'match /appData/goal',
     'match /appData/consent',
+    'match /appData/smartwatch',
     'match /plans/{planId}',
     'match /dailyGoals/{dateKey}',
   ];
@@ -36,21 +37,38 @@ test('firestore.rules enforces global default-deny, email-verified ownership, an
   assert.ok(rules.includes("'medicalClearanceAcknowledged'"));
   assert.ok(rules.includes('function isUpdateAiConsentAction()'));
 
-  // 5. No unrestricted allow true or blanket deletes
+  // 5. Secure list queries on plans and dailyGoals strictly enforce existing().uid == request.auth.uid
+  const secureListMatches =
+    rules.match(/allow list:\s*if\s+isOwner\(userId\)\s*&&\s*existing\(\)\.uid == request\.auth\.uid;/g) ??
+    [];
+  assert.ok(
+    secureListMatches.length >= 2,
+    'Both plans and dailyGoals list rules must enforce owner-scoped existing().uid == request.auth.uid'
+  );
+
+  // 6. No unrestricted allow true or blanket deletes
   assert.equal(/allow\s+(read|write|get|list|create|update|delete)\s*:\s*if\s+true\b/.test(rules), false);
   const deleteMatches = rules.match(/allow delete:\s*if\s+false;/g) ?? [];
   assert.ok(deleteMatches.length >= 6, 'All user-scoped paths must explicitly deny client delete');
 
-  // 6. Server timestamp enforcement on create/update
+  // 7. Server timestamp enforcement on create/update
   assert.ok(rules.includes('incoming().createdAt == request.time'));
   assert.ok(rules.includes('incoming().updatedAt == request.time'));
   assert.ok(rules.includes('incoming().createdAt == existing().createdAt'));
   assert.ok(rules.includes('incoming().uid == existing().uid'));
+
+  // 8. Sprint 02 optional field validators (multi-sport, measurable goal, schedule preferences, strategyV2, versioning)
+  assert.ok(rules.includes('function isValidSportsList(sports)'));
+  assert.ok(rules.includes('function isValidMeasurableGoal(goal)'));
+  assert.ok(rules.includes('function isValidSchedulePreferences(pref)'));
+  assert.ok(rules.includes('function isValidStrategyV2(strategy)'));
+  assert.ok(rules.includes("'versionNumber'"));
+  assert.ok(rules.includes("'strategyV2'"));
 });
 
 test('firebase-blueprint.json stays synchronized with firestore.rules entities and paths', () => {
   const blueprint = JSON.parse(fs.readFileSync(BLUEPRINT_PATH, 'utf8')) as {
-    entities: Record<string, unknown>;
+    entities: Record<string, { properties?: Record<string, unknown> }>;
     firestore: Record<string, unknown>;
   };
 
@@ -58,13 +76,25 @@ test('firebase-blueprint.json stays synchronized with firestore.rules entities a
   assert.ok(blueprint.entities.FitnessProfile);
   assert.ok(blueprint.entities.FitnessGoal);
   assert.ok(blueprint.entities.AiConsentRecord);
+  assert.ok(blueprint.entities.SmartwatchConnection);
   assert.ok(blueprint.entities.WorkoutPlan);
   assert.ok(blueprint.entities.DailyGoal);
+
+  // Sprint 02 optional fields present in blueprint
+  assert.ok(blueprint.entities.FitnessGoal.properties?.sports);
+  assert.ok(blueprint.entities.FitnessGoal.properties?.measurableGoal);
+  assert.ok(blueprint.entities.FitnessGoal.properties?.schedulePreferences);
+  assert.ok(blueprint.entities.WorkoutPlan.properties?.sports);
+  assert.ok(blueprint.entities.WorkoutPlan.properties?.versionNumber);
+  assert.ok(blueprint.entities.WorkoutPlan.properties?.parentPlanId);
+  assert.ok(blueprint.entities.WorkoutPlan.properties?.revisionReason);
+  assert.ok(blueprint.entities.WorkoutPlan.properties?.strategyV2);
 
   assert.ok(blueprint.firestore['/users/{userId}']);
   assert.ok(blueprint.firestore['/users/{userId}/appData/profile']);
   assert.ok(blueprint.firestore['/users/{userId}/appData/goal']);
   assert.ok(blueprint.firestore['/users/{userId}/appData/consent']);
+  assert.ok(blueprint.firestore['/users/{userId}/appData/smartwatch']);
   assert.ok(blueprint.firestore['/users/{userId}/plans/{planId}']);
   assert.ok(blueprint.firestore['/users/{userId}/dailyGoals/{dateKey}']);
 });

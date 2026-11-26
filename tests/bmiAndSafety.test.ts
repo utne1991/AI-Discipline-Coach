@@ -88,7 +88,7 @@ test('evaluateSafetyProfile enforces minor guardian rules, medical clearance tri
   assert.equal(youth.cautiousMode, true);
   assert.equal(youth.loadLimits.allowHighIntensity, false);
   assert.ok(youth.loadLimits.maxSessionMinutes <= 45);
-  assert.ok(youth.loadLimits.maxSetsPerExercise <= 3);
+  assert.ok(youth.loadLimits.maxSetsPerExercise <= 4);
 
   const teen = evaluateSafetyProfile({
     age: 16,

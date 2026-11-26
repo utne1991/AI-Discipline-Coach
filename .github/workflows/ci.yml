@@ -41,7 +41,7 @@ jobs:
 
       - name: Secret hygiene check
         run: |
-          if grep -rnE "BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|service_account|AIza[0-9A-Za-z_-]{35}" src server.ts tests .github docs --exclude-dir=node_modules --exclude-dir=dist; then
+          if grep -rnE "[B]EGIN (RSA |EC |OPENSSH )?PRIVATE KEY|serv[i]ce_account|AI[z]a[0-9A-Za-z_-]{35}" src server.ts tests .github docs --exclude-dir=node_modules --exclude-dir=dist; then
             echo "ERROR: Potential secret detected in source/docs."
             exit 1
           fi

@@ -109,7 +109,7 @@ async function startTestServer(options?: {
     generateStrategy: async (profile, goal) => {
       capturedStrategyProfiles.push(profile);
       if (mode === 'mock_engine') {
-        return generateWeekOneStrategy(profile, goal, { provider: 'mock' });
+        return generateWeekOneStrategy(profile, goal, { providerOverride: 'mock' });
       }
       if (mode === 'ai_error') {
         throw new Error('Không thể tạo lịch tập bằng AI lúc này: Upstream timeout');

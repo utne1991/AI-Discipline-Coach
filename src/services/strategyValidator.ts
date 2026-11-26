@@ -705,3 +705,169 @@ export function validateWorkoutStrategy(
     },
   };
 }
+
+export interface StrategyV2ValidationResult {
+  valid: boolean;
+  errors: string[];
+  warnings: string[];
+}
+
+/**
+ * Independent Safety & Strategic Rulebook for Sprint 02 Strategy Engine v2.
+ * Runs deterministically without trusting any LLM output.
+ */
+export function validateStrategyV2Blueprint(
+  blueprint: import('../shared/types.ts').StrategyV2Blueprint | null | undefined,
+  profile: ValidatorProfileContext,
+  goal: ValidatorGoalContext
+): StrategyV2ValidationResult {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+
+  if (!blueprint || typeof blueprint !== 'object') {
+    return {
+      valid: false,
+      errors: ['Thiếu dữ liệu chiến lược toàn diện StrategyV2Blueprint.'],
+      warnings,
+    };
+  }
+
+  const safety = evaluateSafetyProfile({
+    age: profile.age,
+    weightKg: profile.weightKg,
+    heightCm: profile.heightCm,
+    fitnessLevel: profile.fitnessLevel,
+    daysPerWeek: profile.daysPerWeek,
+    healthLimitations: profile.healthLimitations,
+    healthNotes: profile.healthNotes,
+  });
+
+  // 1. All 8 strategic questions must have substantive answers
+  if (!isNonEmptyString(blueprint.ultimateGoal, 15)) {
+    errors.push('Chiến lược thiếu câu trả lời rõ ràng cho "Mục tiêu cuối cùng là gì?".');
+  }
+  if (!isNonEmptyString(blueprint.currentPosition, 15)) {
+    errors.push('Chiến lược thiếu đánh giá "Người dùng hiện đang ở đâu?".');
+  }
+  if (!isNonEmptyString(blueprint.todayDirective, 12)) {
+    errors.push('Chiến lược thiếu câu trả lời cho "Nhiệm vụ hôm nay là gì?".');
+  }
+  if (!isNonEmptyString(blueprint.reassessmentSchedule, 10)) {
+    errors.push('Chiến lược thiếu lịch trình "Khi nào cần đánh giá lại?".');
+  }
+  if (!Array.isArray(blueprint.adjustmentSignals) || blueprint.adjustmentSignals.length < 2) {
+    errors.push('Chiến lược phải chỉ rõ tối thiểu 2 dữ liệu dùng để điều chỉnh kế hoạch.');
+  }
+  if (
+    !Array.isArray(blueprint.stopAndEscalateCriteria) ||
+    blueprint.stopAndEscalateCriteria.length < 2
+  ) {
+    errors.push('Chiến lược phải nêu rõ tối thiểu 2 quy tắc dừng tập, phục hồi hoặc tham khảo chuyên gia.');
+  }
+
+  // 2. Full-duration phases must cover Week 1 .. goal.durationWeeks contiguously without gaps/overlaps
+  if (!Array.isArray(blueprint.phases) || blueprint.phases.length < 2) {
+    errors.push('Chiến lược nhiều tuần phải được chia tối thiểu 2 giai đoạn rõ ràng.');
+  } else {
+    const sortedPhases = [...blueprint.phases].sort((a, b) => a.weekStart - b.weekStart);
+    if (sortedPhases[0].weekStart !== 1) {
+      errors.push(`Giai đoạn đầu tiên phải bắt đầu từ Tuần 1 (hiện tại là Tuần ${sortedPhases[0].weekStart}).`);
+    }
+    const lastPhase = sortedPhases[sortedPhases.length - 1];
+    if (lastPhase.weekEnd !== goal.durationWeeks) {
+      errors.push(
+        `Giai đoạn cuối phải kết thúc ở Tuần ${goal.durationWeeks} (hiện tại là Tuần ${lastPhase.weekEnd}).`
+      );
+    }
+    for (let i = 0; i < sortedPhases.length; i += 1) {
+      const p = sortedPhases[i];
+      if (p.weekEnd < p.weekStart) {
+        errors.push(`Giai đoạn ${p.phaseNumber} có weekEnd (${p.weekEnd}) nhỏ hơn weekStart (${p.weekStart}).`);
+      }
+      if (i > 0 && p.weekStart !== sortedPhases[i - 1].weekEnd + 1) {
+        errors.push(
+          `Các giai đoạn không liên tục giữa Giai đoạn ${sortedPhases[i - 1].phaseNumber} và ${p.phaseNumber}.`
+        );
+      }
+    }
+  }
+
+  // 3. Milestones must fall inside [1..durationWeeks]
+  if (!Array.isArray(blueprint.milestones) || blueprint.milestones.length < 2) {
+    errors.push('Chiến lược phải có tối thiểu 2 cột mốc đo lường.');
+  } else {
+    for (const ms of blueprint.milestones) {
+      if (ms.weekNumber < 1 || ms.weekNumber > goal.durationWeeks) {
+        errors.push(`Cột mốc "${ms.title}" nằm ngoài thời hạn ${goal.durationWeeks} tuần.`);
+      }
+    }
+  }
+
+  // 4. Sport volume allocation must respect safety load limits & weekly session count
+  if (!Array.isArray(blueprint.volumeAllocation) || blueprint.volumeAllocation.length === 0) {
+    errors.push('Thiếu bảng phân bổ khối lượng tập luyện theo môn.');
+  } else {
+    const totalMinutes = blueprint.volumeAllocation.reduce(
+      (sum, item) => sum + (Number.isFinite(item.weeklyMinutes) ? item.weeklyMinutes : 0),
+      0
+    );
+    const totalSessions = blueprint.volumeAllocation.reduce(
+      (sum, item) => sum + (Number.isFinite(item.sessionsPerWeek) ? item.sessionsPerWeek : 0),
+      0
+    );
+    if (totalMinutes > safety.loadLimits.maxWeeklyMinutes) {
+      errors.push(
+        `Tổng khối lượng tuần (${totalMinutes} phút) vượt ngưỡng an toàn tối đa (${safety.loadLimits.maxWeeklyMinutes} phút/tuần).`
+      );
+    }
+    if (totalSessions !== profile.daysPerWeek) {
+      errors.push(
+        `Tổng số buổi phân bổ theo môn (${totalSessions}) không khớp hồ sơ (${profile.daysPerWeek} buổi/tuần).`
+      );
+    }
+  }
+
+  // 5. Real calendar mapping & daily commitments
+  const scheduledDays = blueprint.calendarContext?.scheduledDays ?? [];
+  if (scheduledDays.length !== 7) {
+    errors.push(`Lịch thực tế phải ánh xạ đủ 7 ngày (hiện có ${scheduledDays.length}).`);
+  } else {
+    const invalidDate = scheduledDays.find((d) => !/^\d{4}-\d{2}-\d{2}$/.test(d.dateKey));
+    if (invalidDate) {
+      errors.push(`Ngày thực tế "${invalidDate.dateKey}" không đúng định dạng YYYY-MM-DD.`);
+    }
+  }
+
+  if (!Array.isArray(blueprint.dailyCommitments) || blueprint.dailyCommitments.length < 7) {
+    errors.push('Chiến lược phải sinh tối thiểu 1 nhiệm vụ hằng ngày cho mỗi ngày trong tuần.');
+  }
+
+  // 6. AI-independent minor & clinical escalation criteria
+  const combinedStopText = (blueprint.stopAndEscalateCriteria ?? []).join(' ').toLowerCase();
+  if (safety.isMinor && !/(phụ huynh|giám hộ|guardian|parent)/i.test(combinedStopText)) {
+    errors.push(
+      'Người dùng dưới 18 tuổi bắt buộc có quy tắc dừng tập và giám sát từ phụ huynh/người giám hộ trong stopAndEscalateCriteria.'
+    );
+  }
+  if (
+    safety.requiresMedicalClearance &&
+    !/(bác sĩ|chuyên gia y tế|vật lý trị liệu|doctor|physician)/i.test(combinedStopText)
+  ) {
+    errors.push(
+      'Hồ sơ cần đánh giá y khoa bắt buộc nêu rõ quy tắc dừng và tham khảo bác sĩ trong stopAndEscalateCriteria.'
+    );
+  }
+
+  if (blueprint.feasibility?.status === 'ambitious_adjust') {
+    warnings.push(
+      `Mục tiêu có độ dốc cao (${blueprint.feasibility.score}/100); khuyến nghị đánh giá lại tại mốc Tuần 2.`
+    );
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+    warnings,
+  };
+}
+
