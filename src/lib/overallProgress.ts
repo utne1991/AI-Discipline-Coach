@@ -199,3 +199,128 @@ export function calculateOverallDisciplineProgress(params: {
       completedDailyGoalsCount > 0,
   };
 }
+
+export type WeekdayChartScope = 'latest' | 'all';
+
+export interface WeekdayExercisePoint {
+  dayIndex: number;
+  shortLabel: string;
+  fullLabel: string;
+  completedExercises: number;
+  plannedExercises: number;
+  checkedInSessions: number;
+  isRestDay: boolean;
+}
+
+export interface WeeklyExerciseSummary {
+  days: WeekdayExercisePoint[];
+  totalCompletedExercises: number;
+  totalPlannedExercises: number;
+  peakDay: WeekdayExercisePoint | null;
+  planCountIncluded: number;
+}
+
+const WEEKDAY_META: ReadonlyArray<{ dayIndex: number; shortLabel: string; fullLabel: string }> = [
+  { dayIndex: 1, shortLabel: 'T2', fullLabel: 'Thứ 2' },
+  { dayIndex: 2, shortLabel: 'T3', fullLabel: 'Thứ 3' },
+  { dayIndex: 3, shortLabel: 'T4', fullLabel: 'Thứ 4' },
+  { dayIndex: 4, shortLabel: 'T5', fullLabel: 'Thứ 5' },
+  { dayIndex: 5, shortLabel: 'T6', fullLabel: 'Thứ 6' },
+  { dayIndex: 6, shortLabel: 'T7', fullLabel: 'Thứ 7' },
+  { dayIndex: 7, shortLabel: 'CN', fullLabel: 'Chủ nhật' },
+];
+
+/**
+ * Aggregates exercise counts from checked-in workout days by day of week (T2 -> CN).
+ * Respects day-level check-in granularity: only non-rest days present in `completedDays`
+ * contribute to `completedExercises`.
+ */
+export function calculateCompletedExercisesByWeekday(
+  plans: WorkoutPlanData[],
+  scope: WeekdayChartScope = 'latest'
+): WeeklyExerciseSummary {
+  const days: WeekdayExercisePoint[] = WEEKDAY_META.map((meta) => ({
+    dayIndex: meta.dayIndex,
+    shortLabel: meta.shortLabel,
+    fullLabel: meta.fullLabel,
+    completedExercises: 0,
+    plannedExercises: 0,
+    checkedInSessions: 0,
+    isRestDay: false,
+  }));
+
+  if (!Array.isArray(plans) || plans.length === 0) {
+    return {
+      days,
+      totalCompletedExercises: 0,
+      totalPlannedExercises: 0,
+      peakDay: null,
+      planCountIncluded: 0,
+    };
+  }
+
+  const newestFirst = [...plans].sort((a, b) => {
+    const timeDiff = b.createdAt.localeCompare(a.createdAt);
+    if (timeDiff !== 0) return timeDiff;
+    return b.id - a.id;
+  });
+
+  const targetPlans = scope === 'latest' ? [newestFirst[0]] : newestFirst;
+
+  for (const plan of targetPlans) {
+    const schedule = Array.isArray(plan.scheduleJson) ? plan.scheduleJson : [];
+    const completedSet = new Set(Array.isArray(plan.completedDays) ? plan.completedDays : []);
+
+    for (const workoutDay of schedule) {
+      if (
+        !Number.isInteger(workoutDay.dayIndex) ||
+        workoutDay.dayIndex < 1 ||
+        workoutDay.dayIndex > 7
+      ) {
+        continue;
+      }
+      const bucket = days[workoutDay.dayIndex - 1];
+      if (!bucket) continue;
+
+      if (scope === 'latest') {
+        bucket.isRestDay = Boolean(workoutDay.isRestDay);
+      }
+
+      if (workoutDay.isRestDay) {
+        continue;
+      }
+
+      const exerciseCount = Array.isArray(workoutDay.exercises) ? workoutDay.exercises.length : 0;
+      bucket.plannedExercises += exerciseCount;
+
+      if (completedSet.has(workoutDay.dayIndex)) {
+        bucket.completedExercises += exerciseCount;
+        bucket.checkedInSessions += 1;
+      }
+    }
+  }
+
+  let totalCompletedExercises = 0;
+  let totalPlannedExercises = 0;
+  let peakDay: WeekdayExercisePoint | null = null;
+
+  for (const point of days) {
+    totalCompletedExercises += point.completedExercises;
+    totalPlannedExercises += point.plannedExercises;
+    if (
+      point.completedExercises > 0 &&
+      (!peakDay || point.completedExercises > peakDay.completedExercises)
+    ) {
+      peakDay = point;
+    }
+  }
+
+  return {
+    days,
+    totalCompletedExercises,
+    totalPlannedExercises,
+    peakDay,
+    planCountIncluded: targetPlans.length,
+  };
+}
+

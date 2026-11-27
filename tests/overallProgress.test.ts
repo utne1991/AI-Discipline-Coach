@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  calculateCompletedExercisesByWeekday,
   calculateOverallDisciplineProgress,
   getIsoWeekKey,
 } from '../src/lib/overallProgress.ts';
@@ -12,6 +13,7 @@ function makePlan(params: {
   createdAt: string;
   workoutDayIndices: number[];
   completedDays: number[];
+  exercisesPerDay?: Record<number, number>;
 }): WorkoutPlanData {
   const labels = ['Thứ 2', 'Thứ 3', 'Thứ 4', 'Thứ 5', 'Thứ 6', 'Thứ 7', 'Chủ nhật'];
   return {
@@ -30,6 +32,7 @@ function makePlan(params: {
     scheduleJson: labels.map((dayLabel, idx) => {
       const dayIndex = idx + 1;
       const isRestDay = !params.workoutDayIndices.includes(dayIndex);
+      const count = params.exercisesPerDay?.[dayIndex] ?? (isRestDay ? 0 : 3);
       return {
         dayIndex,
         dayLabel,
@@ -41,7 +44,13 @@ function makePlan(params: {
         warmup: 'Xoay khớp 5 phút',
         cooldown: 'Giãn cơ 5 phút',
         safetyNote: 'Giữ kỹ thuật chuẩn',
-        exercises: [],
+        exercises: Array.from({ length: count }, (_, exIdx) => ({
+          name: `Bài tập ${dayIndex}-${exIdx + 1}`,
+          sets: '3 hiệp',
+          repsOrDuration: '12 lần',
+          restSeconds: 60,
+          note: 'Giữ nhịp thở đều',
+        })),
       };
     }),
   };
@@ -120,3 +129,50 @@ test('calculateOverallDisciplineProgress handles empty state cleanly with zeroed
   assert.equal(metrics.planTrend.length, 0);
   assert.equal(metrics.hasAnyActivity, false);
 });
+
+test('calculateCompletedExercisesByWeekday aggregates latest and all-plan exercises per weekday accurately', () => {
+  // Intentionally unsorted (older plan first) to verify latest-plan selection
+  const olderPlan = makePlan({
+    id: 1,
+    createdAt: '2026-11-16T08:00:00.000Z',
+    workoutDayIndices: [1, 3, 5],
+    completedDays: [1, 5],
+    exercisesPerDay: { 1: 4, 3: 5, 5: 3 },
+  });
+  const latestPlan = makePlan({
+    id: 2,
+    createdAt: '2026-11-23T08:00:00.000Z',
+    workoutDayIndices: [1, 3, 6],
+    completedDays: [1, 2, 3], // day 2 is rest day -> ignored
+    exercisesPerDay: { 1: 3, 2: 2, 3: 6, 6: 4 },
+  });
+
+  const latestSummary = calculateCompletedExercisesByWeekday([olderPlan, latestPlan], 'latest');
+  assert.equal(latestSummary.days.length, 7);
+  assert.equal(latestSummary.planCountIncluded, 1);
+  assert.equal(latestSummary.days[0].shortLabel, 'T2');
+  assert.equal(latestSummary.days[0].completedExercises, 3);
+  assert.equal(latestSummary.days[1].isRestDay, true);
+  assert.equal(latestSummary.days[1].completedExercises, 0);
+  assert.equal(latestSummary.days[2].completedExercises, 6);
+  assert.equal(latestSummary.days[5].completedExercises, 0); // day 6 not checked in
+  assert.equal(latestSummary.days[5].plannedExercises, 4);
+  assert.equal(latestSummary.totalCompletedExercises, 9);
+  assert.equal(latestSummary.totalPlannedExercises, 13);
+  assert.equal(latestSummary.peakDay?.dayIndex, 3);
+
+  const allSummary = calculateCompletedExercisesByWeekday([olderPlan, latestPlan], 'all');
+  assert.equal(allSummary.planCountIncluded, 2);
+  assert.equal(allSummary.days[0].completedExercises, 7); // 4 + 3 on Monday
+  assert.equal(allSummary.days[0].checkedInSessions, 2);
+  assert.equal(allSummary.days[2].completedExercises, 6); // 0 + 6 on Wednesday
+  assert.equal(allSummary.days[4].completedExercises, 3); // 3 + 0 on Friday
+  assert.equal(allSummary.totalCompletedExercises, 16);
+  assert.equal(allSummary.peakDay?.dayIndex, 1);
+
+  const emptySummary = calculateCompletedExercisesByWeekday([], 'latest');
+  assert.equal(emptySummary.days.length, 7);
+  assert.equal(emptySummary.totalCompletedExercises, 0);
+  assert.equal(emptySummary.peakDay, null);
+});
+
